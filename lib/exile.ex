@@ -5,20 +5,24 @@ defmodule Exile do
     :erlang.load_nif('./priv/hello', 0)
   end
 
-  def fast_compare(_a, _b) do
-    raise "NIF fast_compare/2 not implemented"
+  def exec(cmd, args) do
+    exec_proc([cmd | args])
   end
 
   def exec_proc(_cmd) do
     raise "NIF exec_proc/0 not implemented"
   end
 
-  def write_proc(_cmd) do
-    raise "NIF exec_proc/0 not implemented"
+  def write_proc(_pipe, _bin) do
+    raise "NIF write_proc/2 not implemented"
   end
 
-  def read_proc(_cmd) do
-    raise "NIF exec_proc/0 not implemented"
+  def read_proc(_pipe) do
+    raise "NIF read_proc/0 not implemented"
+  end
+
+  def close_pipe(_pipe) do
+    raise "NIF close_pipe/1 not implemented"
   end
 
   def kill_proc(_pid) do
@@ -33,8 +37,8 @@ defmodule Exile do
     raise "NIF wait_proc/1 not implemented"
   end
 
-  def pid_info(_pid) do
-    raise "NIF pid_info/1 not implemented"
+  def is_alive(_pid) do
+    raise "NIF is_alive/1 not implemented"
   end
 
   def ps(pid) do
