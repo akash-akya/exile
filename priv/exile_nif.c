@@ -49,18 +49,20 @@ static void close_all(int pipes[3][2]) {
   }
 }
 
-static ExecResult start_proccess(char *args[]) {
-  ExecResult result;
-  pid_t pid;
-  int pipes[3][2] = {{0, 0}, {0, 0}, {0, 0}};
-
-#define RETURN_ERROR(_status)                                                  \
+#define RETURN_ERROR(__ERR__)                                                  \
   do {                                                                         \
-    result.status = _status;                                                   \
+    fprintf(stderr, "error in start_proccess(), %s:%d %s\n", __FILE__,         \
+            __LINE__, strerror(errno));                                        \
+    result.status = __ERR__;                                                   \
     result.err = errno;                                                        \
     close_all(pipes);                                                          \
     return result;                                                             \
   } while (0);
+
+static ExecResult start_proccess(char *args[]) {
+  ExecResult result;
+  pid_t pid;
+  int pipes[3][2] = {{0, 0}, {0, 0}, {0, 0}};
 
   if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1 ||
       pipe(pipes[STDERR_FILENO]) == -1) {
@@ -133,16 +135,18 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
   exec_args[args_len] = NULL;
 
   ExecResult result = start_proccess(exec_args);
+  ERL_NIF_TERM ret;
 
   switch (result.status) {
   case SUCCESS:
-    return enif_make_tuple4(env, enif_make_int(env, 0),
-                            enif_make_int(env, result.pid),
-                            enif_make_int(env, result.pipe_in),
-                            enif_make_int(env, result.pipe_out));
+    ret = enif_make_tuple3(env, enif_make_int(env, result.pid),
+                           enif_make_int(env, result.pipe_in),
+                           enif_make_int(env, result.pipe_out));
+
+    return ERL_OK(ret);
   default:
-    return enif_make_tuple4(env, enif_make_int(env, -1), enif_make_int(env, 0),
-                            enif_make_int(env, 0), enif_make_int(env, 0));
+    ret = enif_make_int(env, result.err);
+    return ERL_ERROR(ret);
   }
 }
 

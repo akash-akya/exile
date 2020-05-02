@@ -1,8 +1,8 @@
-defmodule Exile do
+defmodule Exile.ProcessHelper do
   @on_load :load_nifs
 
   def load_nifs do
-    :erlang.load_nif('./priv/hello', 0)
+    :erlang.load_nif('./priv/exile_nif', 0)
   end
 
   def exec(cmd, args) do
