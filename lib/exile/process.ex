@@ -3,8 +3,12 @@ defmodule Exile.Process do
   require Logger
   use GenServer
 
-  def start_link(cmd, args) do
-    GenServer.start(__MODULE__, %{cmd: cmd, args: args})
+  # delay between retries when io is busy (in milliseconds)
+  @default_opts %{io_busy_wait: 1}
+
+  def start_link(cmd, args, opts \\ %{}) do
+    opts = Map.merge(@default_opts, opts)
+    GenServer.start(__MODULE__, %{cmd: cmd, args: args, opts: opts})
   end
 
   def close_stdin(process) do
@@ -31,16 +35,21 @@ defmodule Exile.Process do
     GenServer.call(process, :await_exit, :infinity)
   end
 
+  def stop(process) do
+    GenServer.stop(process, :normal, :infinity)
+  end
+
   ## Server
 
-  def init(%{cmd: cmd, args: args}) do
+  def init(%{cmd: cmd, args: args, opts: opts}) do
     path = :os.find_executable(to_charlist(cmd))
 
     unless path do
       raise "Command not found: #{cmd}"
     end
 
-    {:ok, %{cmd: path, args: args, read_acc: [], errno: nil}, {:continue, nil}}
+    {:ok, %{cmd: path, args: args, opts: opts, read_acc: [], errno: nil, status: :init},
+     {:continue, nil}}
   end
 
   def handle_continue(nil, state) do
@@ -48,8 +57,8 @@ defmodule Exile.Process do
 
     case ProcessHelper.exec_proc([state.cmd | exec_args]) do
       {:ok, {pid, stdin, stdout}} ->
-        start_watcher(pid, stdin)
-        state = Map.merge(state, %{pid: pid, stdin: stdin, stdout: stdout})
+        start_watcher(pid, stdin, stdout)
+        state = Map.merge(state, %{pid: pid, stdin: stdin, stdout: stdout, status: :start})
         {:noreply, state}
 
       {:error, errno} ->
@@ -57,23 +66,27 @@ defmodule Exile.Process do
     end
   end
 
+  def handle_call(:os_pid, _from, state), do: {:reply, state.pid, state}
+
+  def handle_call(_, _from, %{status: {:exit, status}}), do: {:reply, {:error, {:exit, status}}}
+
+  def handle_call(:await_exit, from, state), do: do_await_exit(state, from)
+
+  def handle_call({:write, _binary}, _from, %{stdin: :closed} = state),
+    do: {:reply, {:error, :closed}, state}
+
   def handle_call({:write, binary}, from, state), do: do_write(state, from, binary)
 
   def handle_call({:read, bytes}, from, state), do: do_read(state, from, bytes)
 
-  def handle_call(:os_pid, _from, state), do: {:reply, state.pid, state}
+  def handle_call(:close_stdin, _from, %{stdin: :closed} = state), do: {:reply, :closed, state}
 
   def handle_call(:close_stdin, _from, state) do
     case ProcessHelper.close_pipe(state.stdin) do
-      :ok ->
-        {:reply, :ok, state}
-
-      {:error, errno} ->
-        {:reply, {:error, errno}, %{state | errno: errno}}
+      :ok -> {:reply, :ok, %{state | stdin: :closed}}
+      {:error, errno} -> {:reply, {:error, errno}, %{state | errno: errno}}
     end
   end
-
-  def handle_call(:await_exit, from, state), do: do_await_exit(state, from)
 
   def handle_info({:read, bytes, from}, state), do: do_read(state, from, bytes)
   def handle_info({:write, binary, from}, state), do: do_write(state, from, binary)
@@ -82,14 +95,21 @@ defmodule Exile.Process do
   defp do_write(state, from, binary) do
     case ProcessHelper.write_proc(state.stdin, binary) do
       {:ok, bytes} ->
+        # Logger.info("Wrote: #{bytes} length: #{IO.iodata_length(binary)}")
+
         if bytes < IO.iodata_length(binary) do
           binary = IO.iodata_to_binary(binary)
-          binary = binary_part(binary, bytes, IO.iodata_length(binary))
-          Process.send_after(self(), {:write, binary, from}, 100)
+          binary = binary_part(binary, bytes, IO.iodata_length(binary) - bytes)
+          Process.send_after(self(), {:write, binary, from}, state.opts.io_busy_wait)
         else
           GenServer.reply(from, :ok)
         end
 
+        {:noreply, state}
+
+      # EAGAIN
+      {:error, 35} ->
+        Process.send_after(self(), {:write, binary, from}, state.opts.io_busy_wait)
         {:noreply, state}
 
       {:error, errno} ->
@@ -106,7 +126,12 @@ defmodule Exile.Process do
 
       {:ok, binary} ->
         if IO.iodata_length(binary) < bytes do
-          Process.send_after(self(), {:read, bytes - IO.iodata_length(binary), from}, 100)
+          Process.send_after(
+            self(),
+            {:read, bytes - IO.iodata_length(binary), from},
+            state.opts.io_busy_wait
+          )
+
           {:noreply, %{state | read_acc: [state.read_acc | binary]}}
         else
           GenServer.reply(from, {:ok, [state.read_acc | binary]})
@@ -115,7 +140,7 @@ defmodule Exile.Process do
 
       # EAGAIN
       {:error, 35} ->
-        Process.send_after(self(), {:read, bytes, from}, 100)
+        Process.send_after(self(), {:read, bytes, from}, state.opts.io_busy_wait)
         {:noreply, state}
 
       {:error, errno} ->
@@ -130,7 +155,7 @@ defmodule Exile.Process do
         {:reply, {:ok, status}, state}
 
       {0, _} ->
-        Process.send_after(self(), {:await_exit, from}, 100)
+        Process.send_after(self(), {:await_exit, from}, state.opts.io_busy_wait)
         {:noreply, state}
 
       {-1, status} ->
@@ -138,16 +163,11 @@ defmodule Exile.Process do
     end
   end
 
-  # def ps(pid) do
-  #   {out, 0} = System.cmd("ps", [to_string(pid)])
-  #   out
-  # end
-
   @stdin_close_wait 3000
   @sigterm_wait 1000
 
   # Try to gracefully terminate external proccess if the genserver associated with the process is killed
-  defp start_watcher(pid, stdin) do
+  defp start_watcher(pid, stdin, stdout) do
     parent = self()
 
     watcher_pid =
@@ -155,9 +175,12 @@ defmodule Exile.Process do
         ref = Process.monitor(parent)
         send(parent, {self(), :done})
 
+        # TODO: should check if process is alreayd exit
         receive do
           {:DOWN, ^ref, :process, ^parent, _reason} ->
-            with {:error, _} <- ProcessHelper.close_pipe(stdin),
+            with true <- ProcessHelper.is_alive(pid),
+                 _ <- ProcessHelper.close_pipe(stdin),
+                 _ <- ProcessHelper.close_pipe(stdout),
                  _ <- :timer.sleep(@stdin_close_wait),
                  {p, _} <- ProcessHelper.wait_proc(pid),
                  false <- p != pid,

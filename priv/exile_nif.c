@@ -69,7 +69,7 @@ static ExecResult start_proccess(char *args[]) {
     RETURN_ERROR(PIPE_CREATE_ERROR)
   }
 
-  if (set_flag(pipes[STDIN_FILENO][PIPE_READ], , O_CLOEXEC) < 0 ||
+  if (set_flag(pipes[STDIN_FILENO][PIPE_READ], O_CLOEXEC) < 0 ||
       set_flag(pipes[STDOUT_FILENO][PIPE_WRITE], O_CLOEXEC) < 0 ||
       set_flag(pipes[STDIN_FILENO][PIPE_WRITE], O_CLOEXEC | O_NONBLOCK) < 0 ||
       set_flag(pipes[STDOUT_FILENO][PIPE_READ], O_CLOEXEC | O_NONBLOCK) < 0 ||
@@ -87,12 +87,18 @@ static ExecResult start_proccess(char *args[]) {
   case 0:
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
+    close(STDERR_FILENO);
 
     if (dup2(pipes[STDIN_FILENO][PIPE_READ], STDIN_FILENO) < 0)
       RETURN_ERROR(PIPE_DUP_ERROR)
     if (dup2(pipes[STDOUT_FILENO][PIPE_WRITE], STDOUT_FILENO) < 0)
       RETURN_ERROR(PIPE_DUP_ERROR)
 
+    int dev_null = open("/dev/null", O_WRONLY);
+    if (dup2(dev_null, STDERR_FILENO) < 0)
+      RETURN_ERROR(PIPE_DUP_ERROR)
+
+    close(dev_null);
     close_all(pipes);
 
     execvp(args[0], args);
@@ -166,6 +172,8 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
 
   if (result >= 0) {
     return ERL_OK(enif_make_int(env, result));
+  } else if (errno == EAGAIN) {
+    return ERL_ERROR(enif_make_int(env, errno));
   } else {
     perror("write()");
     return ERL_ERROR(enif_make_int(env, errno));
@@ -204,6 +212,8 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
     enif_alloc_binary(result, &bin);
     memcpy(bin.data, buf, result);
     return ERL_OK(enif_make_binary(env, &bin));
+  } else if (errno == EAGAIN) {
+    return ERL_ERROR(enif_make_int(env, errno));
   } else {
     perror("read()");
     return ERL_ERROR(enif_make_int(env, errno));
