@@ -59,7 +59,7 @@ static void close_all(int pipes[3][2]) {
     return result;                                                             \
   } while (0);
 
-static ExecResult start_proccess(char *args[]) {
+static ExecResult start_proccess(char *args[], bool stderr_to_console) {
   ExecResult result;
   pid_t pid;
   int pipes[3][2] = {{0, 0}, {0, 0}, {0, 0}};
@@ -78,8 +78,6 @@ static ExecResult start_proccess(char *args[]) {
     RETURN_ERROR(PIPE_FLAG_ERROR)
   }
 
-  int fd;
-
   switch (pid = fork()) {
   case -1:
     RETURN_ERROR(FORK_ERROR)
@@ -87,18 +85,20 @@ static ExecResult start_proccess(char *args[]) {
   case 0:
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
-    close(STDERR_FILENO);
 
     if (dup2(pipes[STDIN_FILENO][PIPE_READ], STDIN_FILENO) < 0)
       RETURN_ERROR(PIPE_DUP_ERROR)
     if (dup2(pipes[STDOUT_FILENO][PIPE_WRITE], STDOUT_FILENO) < 0)
       RETURN_ERROR(PIPE_DUP_ERROR)
 
-    int dev_null = open("/dev/null", O_WRONLY);
-    if (dup2(dev_null, STDERR_FILENO) < 0)
-      RETURN_ERROR(PIPE_DUP_ERROR)
+    if (stderr_to_console != true) {
+      close(STDERR_FILENO);
+      int dev_null = open("/dev/null", O_WRONLY);
+      if (dup2(dev_null, STDERR_FILENO) < 0)
+        RETURN_ERROR(PIPE_DUP_ERROR)
+      close(dev_null);
+    }
 
-    close(dev_null);
     close_all(pipes);
 
     execvp(args[0], args);
@@ -120,6 +120,7 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
   char _temp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN];
   char *exec_args[MAX_ARGUMENTS + 1];
   char *arg = NULL;
+  bool stderr_to_console = true;
 
   unsigned int args_len;
   if (enif_get_list_length(env, argv[0], &args_len) != true)
@@ -142,7 +143,12 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
   }
   exec_args[args_len] = NULL;
 
-  ExecResult result = start_proccess(exec_args);
+  int temp;
+  if (enif_get_int(env, argv[1], &temp) != true)
+    return enif_make_badarg(env);
+  stderr_to_console = temp == 1 ? true : false;
+
+  ExecResult result = start_proccess(exec_args, stderr_to_console);
   ERL_NIF_TERM ret;
 
   switch (result.status) {
@@ -263,7 +269,7 @@ static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
 }
 
 static ErlNifFunc nif_funcs[] = {
-    {"exec_proc", 1, exec_proc},           {"write_proc", 2, write_proc},
+    {"exec_proc", 2, exec_proc},           {"write_proc", 2, write_proc},
     {"read_proc", 2, read_proc},           {"close_pipe", 1, close_pipe},
     {"terminate_proc", 1, terminate_proc}, {"wait_proc", 1, wait_proc},
     {"kill_proc", 1, kill_proc},           {"is_alive", 1, is_alive},

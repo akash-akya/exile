@@ -4,7 +4,7 @@ defmodule Exile.Process do
   use GenServer
 
   # delay between retries when io is busy (in milliseconds)
-  @default_opts %{io_busy_wait: 1}
+  @default_opts %{io_busy_wait: 1, stderr_to_console: false}
 
   def start_link(cmd, args, opts \\ %{}) do
     opts = Map.merge(@default_opts, opts)
@@ -54,8 +54,9 @@ defmodule Exile.Process do
 
   def handle_continue(nil, state) do
     exec_args = Enum.map(state.args, &to_charlist/1)
+    stderr_to_console = if state.opts.stderr_to_console, do: 1, else: 0
 
-    case ProcessHelper.exec_proc([state.cmd | exec_args]) do
+    case ProcessHelper.exec_proc([state.cmd | exec_args], stderr_to_console) do
       {:ok, {pid, stdin, stdout}} ->
         start_watcher(pid, stdin, stdout)
         state = Map.merge(state, %{pid: pid, stdin: stdin, stdout: stdout, status: :start})

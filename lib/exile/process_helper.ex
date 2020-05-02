@@ -5,7 +5,7 @@ defmodule Exile.ProcessHelper do
     :erlang.load_nif('./priv/exile_nif', 0)
   end
 
-  def exec_proc(_cmd) do
+  def exec_proc(_cmd, _stderr_to_console) do
     raise "NIF exec_proc/0 not implemented"
   end
 
