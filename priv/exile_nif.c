@@ -36,8 +36,8 @@ typedef struct ExecResults {
   int pipe_out;
 } ExecResult;
 
-static int set_flag(int fd) {
-  return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK | O_CLOEXEC);
+static int set_flag(int fd, int flags) {
+  return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | flags);
 }
 
 static void close_all(int pipes[3][2]) {
@@ -69,14 +69,16 @@ static ExecResult start_proccess(char *args[]) {
     RETURN_ERROR(PIPE_CREATE_ERROR)
   }
 
-  if (set_flag(pipes[STDIN_FILENO][PIPE_READ]) < 0 ||
-      set_flag(pipes[STDIN_FILENO][PIPE_WRITE]) < 0 ||
-      set_flag(pipes[STDOUT_FILENO][PIPE_READ]) < 0 ||
-      set_flag(pipes[STDOUT_FILENO][PIPE_WRITE]) < 0 ||
-      set_flag(pipes[STDERR_FILENO][PIPE_READ]) < 0 ||
-      set_flag(pipes[STDERR_FILENO][PIPE_WRITE]) < 0) {
+  if (set_flag(pipes[STDIN_FILENO][PIPE_READ], , O_CLOEXEC) < 0 ||
+      set_flag(pipes[STDOUT_FILENO][PIPE_WRITE], O_CLOEXEC) < 0 ||
+      set_flag(pipes[STDIN_FILENO][PIPE_WRITE], O_CLOEXEC | O_NONBLOCK) < 0 ||
+      set_flag(pipes[STDOUT_FILENO][PIPE_READ], O_CLOEXEC | O_NONBLOCK) < 0 ||
+      set_flag(pipes[STDERR_FILENO][PIPE_READ], O_CLOEXEC | O_NONBLOCK) < 0 ||
+      set_flag(pipes[STDERR_FILENO][PIPE_WRITE], O_CLOEXEC | O_NONBLOCK) < 0) {
     RETURN_ERROR(PIPE_FLAG_ERROR)
   }
+
+  int fd;
 
   switch (pid = fork()) {
   case -1:
@@ -187,10 +189,14 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  int pipe_out;
+  int pipe_out, bytes;
   enif_get_int(env, argv[0], &pipe_out);
+  enif_get_int(env, argv[1], &bytes);
 
-  char buf[65535];
+  if (bytes > 65535 || bytes < 1)
+    enif_make_badarg(env);
+
+  char buf[bytes];
   int result = read(pipe_out, buf, sizeof(buf));
 
   if (result >= 0) {
@@ -248,9 +254,9 @@ static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
 
 static ErlNifFunc nif_funcs[] = {
     {"exec_proc", 1, exec_proc},           {"write_proc", 2, write_proc},
-    {"read_proc", 1, read_proc},           {"close_pipe", 1, close_pipe},
+    {"read_proc", 2, read_proc},           {"close_pipe", 1, close_pipe},
     {"terminate_proc", 1, terminate_proc}, {"wait_proc", 1, wait_proc},
     {"kill_proc", 1, kill_proc},           {"is_alive", 1, is_alive},
 };
 
-ERL_NIF_INIT(Elixir.Exile, nif_funcs, NULL, NULL, NULL, NULL)
+ERL_NIF_INIT(Elixir.Exile.ProcessHelper, nif_funcs, NULL, NULL, NULL, NULL)

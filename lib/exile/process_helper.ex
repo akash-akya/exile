@@ -5,10 +5,6 @@ defmodule Exile.ProcessHelper do
     :erlang.load_nif('./priv/exile_nif', 0)
   end
 
-  def exec(cmd, args) do
-    exec_proc([cmd | args])
-  end
-
   def exec_proc(_cmd) do
     raise "NIF exec_proc/0 not implemented"
   end
@@ -17,7 +13,7 @@ defmodule Exile.ProcessHelper do
     raise "NIF write_proc/2 not implemented"
   end
 
-  def read_proc(_pipe) do
+  def read_proc(_pipe, _bytes) do
     raise "NIF read_proc/0 not implemented"
   end
 
@@ -39,10 +35,5 @@ defmodule Exile.ProcessHelper do
 
   def is_alive(_pid) do
     raise "NIF is_alive/1 not implemented"
-  end
-
-  def ps(pid) do
-    {out, 0} = System.cmd("ps", [to_string(pid)])
-    out
   end
 end
