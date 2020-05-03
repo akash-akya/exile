@@ -35,17 +35,7 @@ defmodule Exile.Process do
     GenServer.call(process, {:await_exit, timeout}, :infinity)
   end
 
-  def stop(process) do
-    if exited?(process) do
-      GenServer.stop(process, :normal, :infinity)
-    else
-      GenServer.stop(process, :kill, :infinity)
-    end
-  end
-
-  def exited?(process) do
-    GenServer.call(process, :exited?, :infinity)
-  end
+  def stop(process), do: GenServer.call(process, :stop, :infinity)
 
   ## Server
 
@@ -84,7 +74,17 @@ defmodule Exile.Process do
     end
   end
 
-  def handle_call(:exited?, _from, state), do: {:reply, !ProcessHelper.is_alive(state.pid), state}
+  def handle_call(:stop, _from, state) do
+    do_close(state, :stdin)
+    do_close(state, :stdout)
+
+    if ProcessHelper.is_alive(state.pid) do
+      do_kill(state.pid, :sigkill)
+      {:stop, :process_killed, :ok, %{state | status: {:exit, :killed}}}
+    else
+      {:stop, :normal, :ok, state}
+    end
+  end
 
   def handle_call(:os_pid, _from, state), do: {:reply, state.pid, state}
 
@@ -109,14 +109,7 @@ defmodule Exile.Process do
 
   def handle_call({:read, bytes}, from, state), do: do_read(state, bytes, from)
 
-  def handle_call(:close_stdin, _from, %{stdin: :closed} = state), do: {:reply, :closed, state}
-
-  def handle_call(:close_stdin, _from, state) do
-    case ProcessHelper.close_pipe(state.stdin) do
-      :ok -> {:reply, :ok, %{state | stdin: :closed}}
-      {:error, errno} -> {:reply, {:error, errno}, %{state | errno: errno}}
-    end
-  end
+  def handle_call(:close_stdin, _from, state), do: do_close(state, :stdin)
 
   def handle_call({:kill, signal}, _from, state) do
     do_kill(state.pid, signal)
@@ -242,6 +235,19 @@ defmodule Exile.Process do
 
   defp do_kill(pid, :sigterm), do: ProcessHelper.terminate_proc(pid)
 
+  defp do_close(state, type) do
+    case state[type] do
+      :closed ->
+        {:reply, :ok, %{state | type => :closed}}
+
+      pipe ->
+        case ProcessHelper.close_pipe(pipe) do
+          :ok -> {:reply, :ok, %{state | type => :closed}}
+          {:error, errno} -> {:reply, {:error, errno}, %{state | errno: errno}}
+        end
+    end
+  end
+
   defp clear_await(state, from) do
     %{state | await: Map.delete(state.await, from)}
   end
@@ -268,45 +274,44 @@ defmodule Exile.Process do
 
   # Try to gracefully terminate external proccess if the genserver associated with the process is killed
   defp start_watcher(pid, stdin, stdout) do
-    parent = self()
-
-    watcher_pid =
-      spawn(fn ->
-        ref = Process.monitor(parent)
-        send(parent, {self(), :done})
-
-        # TODO: should check if process is alreayd exit
-        receive do
-          {:DOWN, ^ref, :process, ^parent, :normal} ->
-            :ok
-
-          {:DOWN, ^ref, :process, ^parent, _reason} ->
-            case ProcessHelper.wait_proc(pid) do
-              {^pid, _status} ->
-                # TODO: check stauts
-                nil
-
-              _ ->
-                Logger.debug(fn -> "Killing #{pid}" end)
-
-                with _ <- ProcessHelper.close_pipe(stdin),
-                     _ <- ProcessHelper.close_pipe(stdout),
-                     _ <- :timer.sleep(@stdin_close_wait),
-                     {p, _} <- ProcessHelper.wait_proc(pid),
-                     false <- p != pid,
-                     _ <- ProcessHelper.terminate_proc(pid),
-                     _ <- :timer.sleep(@sigterm_wait),
-                     {p, _} <- ProcessHelper.wait_proc(pid),
-                     false <- p != pid,
-                     _ <- ProcessHelper.kill_proc(pid) do
-                  Logger.debug(fn -> "Killed process: #{pid}" end)
-                end
-            end
-        end
-      end)
+    process_server = self()
+    watcher_pid = spawn(fn -> watcher(process_server, pid, stdin, stdout) end)
 
     receive do
       {^watcher_pid, :done} -> :ok
+    end
+  end
+
+  defp watcher(process_server, pid, stdin, stdout) do
+    ref = Process.monitor(process_server)
+    send(process_server, {self(), :done})
+
+    receive do
+      {:DOWN, ^ref, :process, ^process_server, :normal} ->
+        :ok
+
+      {:DOWN, ^ref, :process, ^process_server, _reason} ->
+        case ProcessHelper.wait_proc(pid) do
+          {^pid, _status} ->
+            # TODO: check stauts
+            nil
+
+          _ ->
+            Logger.debug(fn -> "Killing #{pid}" end)
+
+            with _ <- ProcessHelper.close_pipe(stdin),
+                 _ <- ProcessHelper.close_pipe(stdout),
+                 _ <- :timer.sleep(@stdin_close_wait),
+                 {p, _} <- ProcessHelper.wait_proc(pid),
+                 false <- p != pid,
+                 _ <- ProcessHelper.terminate_proc(pid),
+                 _ <- :timer.sleep(@sigterm_wait),
+                 {p, _} <- ProcessHelper.wait_proc(pid),
+                 false <- p != pid,
+                 _ <- ProcessHelper.kill_proc(pid) do
+              Logger.debug(fn -> "Killed process: #{pid}" end)
+            end
+        end
     end
   end
 end
