@@ -119,7 +119,6 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
   char _temp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN];
   char *exec_args[MAX_ARGUMENTS + 1];
-  char *arg = NULL;
   bool stderr_to_console = true;
 
   unsigned int args_len;
@@ -130,7 +129,7 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
     return enif_make_badarg(env);
 
   ERL_NIF_TERM head, tail, list = argv[0];
-  for (int i = 0; i < args_len; i++) {
+  for (unsigned int i = 0; i < args_len; i++) {
     if (enif_get_list_cell(env, list, &head, &tail) != true)
       return enif_make_badarg(env);
 
@@ -173,7 +172,9 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
     enif_make_badarg(env);
 
   ErlNifBinary bin;
-  bool is_success = enif_inspect_binary(env, argv[1], &bin);
+  if (enif_inspect_binary(env, argv[1], &bin) != true)
+    return enif_make_badarg(env);
+
   int result = write(pipe_in, bin.data, bin.size);
 
   if (result >= 0) {
@@ -269,10 +270,10 @@ static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
 }
 
 static ErlNifFunc nif_funcs[] = {
-    {"exec_proc", 2, exec_proc},           {"write_proc", 2, write_proc},
-    {"read_proc", 2, read_proc},           {"close_pipe", 1, close_pipe},
-    {"terminate_proc", 1, terminate_proc}, {"wait_proc", 1, wait_proc},
-    {"kill_proc", 1, kill_proc},           {"is_alive", 1, is_alive},
+    {"exec_proc", 2, exec_proc, 0},           {"write_proc", 2, write_proc, 0},
+    {"read_proc", 2, read_proc, 0},           {"close_pipe", 1, close_pipe, 0},
+    {"terminate_proc", 1, terminate_proc, 0}, {"wait_proc", 1, wait_proc, 0},
+    {"kill_proc", 1, kill_proc, 0},           {"is_alive", 1, is_alive, 0},
 };
 
 ERL_NIF_INIT(Elixir.Exile.ProcessHelper, nif_funcs, NULL, NULL, NULL, NULL)
