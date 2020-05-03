@@ -10,10 +10,9 @@
 
 #define ERL_TRUE enif_make_atom(env, "true")
 #define ERL_FALSE enif_make_atom(env, "false")
-#define ERL_OK(__TERM__)                                                       \
-  enif_make_tuple2(env, enif_make_atom(env, "ok"), __TERM__)
-#define ERL_ERROR(__TERM__)                                                    \
-  enif_make_tuple2(env, enif_make_atom(env, "error"), __TERM__)
+#define ERL_OK(term) enif_make_tuple2(env, enif_make_atom(env, "ok"), term)
+#define ERL_ERROR(term)                                                        \
+  enif_make_tuple2(env, enif_make_atom(env, "error"), term)
 
 static const int PIPE_READ = 0;
 static const int PIPE_WRITE = 1;
@@ -25,7 +24,8 @@ enum exec_status {
   PIPE_CREATE_ERROR,
   PIPE_FLAG_ERROR,
   FORK_ERROR,
-  PIPE_DUP_ERROR
+  PIPE_DUP_ERROR,
+  NULL_DEV_OPEN_ERROR,
 };
 
 typedef struct ExecResults {
@@ -40,20 +40,20 @@ static int set_flag(int fd, int flags) {
   return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | flags);
 }
 
-static void close_all(int pipes[3][2]) {
-  for (int i = 0; i < 3; i++) {
-    if (pipes[i][PIPE_READ])
+static void close_all(int pipes[2][2]) {
+  for (int i = 0; i < 2; i++) {
+    if (pipes[i][PIPE_READ] > 0)
       close(pipes[i][PIPE_READ]);
-    if (pipes[i][PIPE_WRITE])
+    if (pipes[i][PIPE_WRITE] > 0)
       close(pipes[i][PIPE_WRITE]);
   }
 }
 
-#define RETURN_ERROR(__ERR__)                                                  \
+#define RETURN_ERROR(error)                                                    \
   do {                                                                         \
     fprintf(stderr, "error in start_proccess(), %s:%d %s\n", __FILE__,         \
             __LINE__, strerror(errno));                                        \
-    result.status = __ERR__;                                                   \
+    result.status = error;                                                     \
     result.err = errno;                                                        \
     close_all(pipes);                                                          \
     return result;                                                             \
@@ -62,19 +62,16 @@ static void close_all(int pipes[3][2]) {
 static ExecResult start_proccess(char *args[], bool stderr_to_console) {
   ExecResult result;
   pid_t pid;
-  int pipes[3][2] = {{0, 0}, {0, 0}, {0, 0}};
+  int pipes[2][2] = {{0, 0}, {0, 0}};
 
-  if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1 ||
-      pipe(pipes[STDERR_FILENO]) == -1) {
+  if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1) {
     RETURN_ERROR(PIPE_CREATE_ERROR)
   }
 
   if (set_flag(pipes[STDIN_FILENO][PIPE_READ], O_CLOEXEC) < 0 ||
       set_flag(pipes[STDOUT_FILENO][PIPE_WRITE], O_CLOEXEC) < 0 ||
       set_flag(pipes[STDIN_FILENO][PIPE_WRITE], O_CLOEXEC | O_NONBLOCK) < 0 ||
-      set_flag(pipes[STDOUT_FILENO][PIPE_READ], O_CLOEXEC | O_NONBLOCK) < 0 ||
-      set_flag(pipes[STDERR_FILENO][PIPE_READ], O_CLOEXEC | O_NONBLOCK) < 0 ||
-      set_flag(pipes[STDERR_FILENO][PIPE_WRITE], O_CLOEXEC | O_NONBLOCK) < 0) {
+      set_flag(pipes[STDOUT_FILENO][PIPE_READ], O_CLOEXEC | O_NONBLOCK) < 0) {
     RETURN_ERROR(PIPE_FLAG_ERROR)
   }
 
@@ -94,8 +91,15 @@ static ExecResult start_proccess(char *args[], bool stderr_to_console) {
     if (stderr_to_console != true) {
       close(STDERR_FILENO);
       int dev_null = open("/dev/null", O_WRONLY);
-      if (dup2(dev_null, STDERR_FILENO) < 0)
+
+      if (dev_null == -1)
+        RETURN_ERROR(NULL_DEV_OPEN_ERROR);
+
+      if (dup2(dev_null, STDERR_FILENO) < 0) {
+        close(dev_null);
         RETURN_ERROR(PIPE_DUP_ERROR)
+      }
+
       close(dev_null);
     }
 
@@ -115,11 +119,11 @@ static ExecResult start_proccess(char *args[], bool stderr_to_console) {
   }
 }
 
+/* TODO: return appropriate error instead returning generic "badarg" error */
 static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  char _temp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN];
+  char tmp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN + 1];
   char *exec_args[MAX_ARGUMENTS + 1];
-  bool stderr_to_console = true;
 
   unsigned int args_len;
   if (enif_get_list_length(env, argv[0], &args_len) != true)
@@ -133,19 +137,19 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
     if (enif_get_list_cell(env, list, &head, &tail) != true)
       return enif_make_badarg(env);
 
-    if (enif_get_string(env, head, _temp[i], sizeof(_temp[i]), ERL_NIF_LATIN1) <
-        1)
+    if (enif_get_string(env, head, tmp[i], MAX_ARGUMENT_LEN,
+                        ERL_NIF_LATIN1) < 1)
       return enif_make_badarg(env);
-
-    exec_args[i] = _temp[i];
+    exec_args[i] = tmp[i];
     list = tail;
   }
   exec_args[args_len] = NULL;
 
-  int temp;
-  if (enif_get_int(env, argv[1], &temp) != true)
+  bool stderr_to_console = true;
+  int tmp_int;
+  if (enif_get_int(env, argv[1], &tmp_int) != true)
     return enif_make_badarg(env);
-  stderr_to_console = temp == 1 ? true : false;
+  stderr_to_console = tmp_int == 1 ? true : false;
 
   ExecResult result = start_proccess(exec_args, stderr_to_console);
   ERL_NIF_TERM ret;
