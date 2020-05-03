@@ -31,8 +31,8 @@ defmodule Exile.Process do
     GenServer.call(process, {:kill, signal}, :infinity)
   end
 
-  def await_exit(process) do
-    GenServer.call(process, :await_exit, :infinity)
+  def await_exit(process, timeout \\ :infinity) do
+    GenServer.call(process, :await_exit, timeout)
   end
 
   def stop(process) do
@@ -90,7 +90,9 @@ defmodule Exile.Process do
   end
 
   def handle_info({:read, bytes, from}, state), do: do_read(state, from, bytes)
+
   def handle_info({:write, binary, from}, state), do: do_write(state, from, binary)
+
   def handle_info({:await_exit, from}, state), do: do_await_exit(state, from)
 
   defp do_write(state, from, binary) do

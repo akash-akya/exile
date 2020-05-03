@@ -1,14 +1,22 @@
 defmodule Exile.Stream do
+  @moduledoc """
+   Defines a `Exile.Stream` struct returned by `Exile.stream!/3`.
+  """
+
   alias Exile.Process
 
-  defstruct [:proc_server]
+  defstruct [:proc_server, :stream_opts]
+
+  @default_opts %{exit_timeout: :infinity, chunk_size: 65535}
 
   @type t :: %__MODULE__{}
 
   @doc false
-  def __build__(cmd, args) do
-    {:ok, proc} = Process.start_link(cmd, args)
-    %Exile.Stream{proc_server: proc}
+  def __build__(cmd, args, opts) do
+    opts = Map.merge(@default_opts, opts)
+    {stream_opts, proc_opts} = Map.split(opts, [:exit_timeout, :chunk_size])
+    {:ok, proc} = Process.start_link(cmd, args, proc_opts)
+    %Exile.Stream{proc_server: proc, stream_opts: stream_opts}
   end
 
   defimpl Collectable do
@@ -30,13 +38,11 @@ defmodule Exile.Stream do
   end
 
   defimpl Enumerable do
-    @chunk_size 65535
-
-    def reduce(%{proc_server: proc}, acc, fun) do
+    def reduce(%{proc_server: proc, stream_opts: stream_opts}, acc, fun) do
       start_fun = fn -> :ok end
 
       next_fun = fn :ok ->
-        case Process.read(proc, @chunk_size) do
+        case Process.read(proc, stream_opts.chunk_size) do
           {:eof, []} ->
             {:halt, :normal}
 
@@ -57,7 +63,7 @@ defmodule Exile.Stream do
           # always close stdin before stoping to give the command chance to exit properly
           Process.close_stdin(proc)
 
-          result = Process.await_exit(proc)
+          result = Process.await_exit(proc, stream_opts.exit_timeout)
 
           if exit_type == :normal_exit do
             case result do
