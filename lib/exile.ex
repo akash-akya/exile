@@ -12,7 +12,7 @@ defmodule Exile do
 
   ### Options
     * `exit_timeout`     - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
-    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream
+    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `nil` the output is unbuffered. Use `nil` this if want to receive that data as soon as its flused by the external program. Defaults to 65535
   All other options are passed to `Exile.Process.start_link/3`
 
   Since execution of external program is independent of beam process, once should prefer feeding input and getting output in separate processes.

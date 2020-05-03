@@ -76,9 +76,9 @@ defmodule Exile.Process do
   def handle_call({:write, _binary}, _from, %{stdin: :closed} = state),
     do: {:reply, {:error, :closed}, state}
 
-  def handle_call({:write, binary}, from, state), do: do_write(state, from, binary)
+  def handle_call({:write, binary}, from, state), do: do_write(state, binary, from)
 
-  def handle_call({:read, bytes}, from, state), do: do_read(state, from, bytes)
+  def handle_call({:read, bytes}, from, state), do: do_read(state, bytes, from)
 
   def handle_call(:close_stdin, _from, %{stdin: :closed} = state), do: {:reply, :closed, state}
 
@@ -89,17 +89,15 @@ defmodule Exile.Process do
     end
   end
 
-  def handle_info({:read, bytes, from}, state), do: do_read(state, from, bytes)
+  def handle_info({:read, bytes, from}, state), do: do_read(state, bytes, from)
 
-  def handle_info({:write, binary, from}, state), do: do_write(state, from, binary)
+  def handle_info({:write, binary, from}, state), do: do_write(state, binary, from)
 
   def handle_info({:await_exit, from}, state), do: do_await_exit(state, from)
 
-  defp do_write(state, from, binary) do
+  defp do_write(state, binary, from) do
     case ProcessHelper.write_proc(state.stdin, binary) do
       {:ok, bytes} ->
-        # Logger.info("Wrote: #{bytes} length: #{IO.iodata_length(binary)}")
-
         if bytes < IO.iodata_length(binary) do
           binary = IO.iodata_to_binary(binary)
           binary = binary_part(binary, bytes, IO.iodata_length(binary) - bytes)
@@ -121,7 +119,28 @@ defmodule Exile.Process do
     end
   end
 
-  defp do_read(state, from, bytes) do
+  defp do_read(state, nil, from) do
+    case ProcessHelper.read_proc(state.stdout, 65535) do
+      {:ok, <<>>} ->
+        GenServer.reply(from, {:eof, []})
+        {:noreply, state}
+
+      {:ok, binary} ->
+        GenServer.reply(from, {:ok, binary})
+        {:noreply, state}
+
+      # EAGAIN
+      {:error, 35} ->
+        Process.send_after(self(), {:read, nil, from}, state.opts.io_busy_wait)
+        {:noreply, state}
+
+      {:error, errno} ->
+        GenServer.reply(from, {:error, errno})
+        {:noreply, %{state | errno: errno}}
+    end
+  end
+
+  defp do_read(state, bytes, from) do
     case ProcessHelper.read_proc(state.stdout, bytes) do
       {:ok, <<>>} ->
         GenServer.reply(from, {:eof, state.read_acc})
