@@ -62,14 +62,22 @@ defmodule Exile.Stream do
         try do
           # always close stdin before stoping to give the command chance to exit properly
           Process.close_stdin(proc)
-
           result = Process.await_exit(proc, stream_opts.exit_timeout)
 
-          if exit_type == :normal_exit do
-            case result do
-              {:ok, 0} -> :ok
-              {:ok, status} -> raise "command exited with status: #{status}"
-            end
+          case {exit_type, result} do
+            {_, :timeout} ->
+              Process.kill(proc, :sigkill)
+              raise "command fail to exit within timeout: #{stream_opts.exit_timeout}"
+
+            {:normal, {:ok, 0}} ->
+              :ok
+
+            {:normal, {:ok, exit_status}} ->
+              raise "command exited with status: #{exit_status}"
+
+            {_, error} ->
+              Process.kill(proc, :sigkill)
+              raise "command exited with error: #{inspect(error)}"
           end
         after
           Process.stop(proc)

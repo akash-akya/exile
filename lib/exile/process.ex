@@ -32,11 +32,19 @@ defmodule Exile.Process do
   end
 
   def await_exit(process, timeout \\ :infinity) do
-    GenServer.call(process, :await_exit, timeout)
+    GenServer.call(process, {:await_exit, timeout}, :infinity)
   end
 
   def stop(process) do
-    GenServer.stop(process, :normal, :infinity)
+    if exited?(process) do
+      GenServer.stop(process, :normal, :infinity)
+    else
+      GenServer.stop(process, :kill, :infinity)
+    end
+  end
+
+  def exited?(process) do
+    GenServer.call(process, :exited?, :infinity)
   end
 
   ## Server
@@ -48,8 +56,17 @@ defmodule Exile.Process do
       raise "Command not found: #{cmd}"
     end
 
-    {:ok, %{cmd: path, args: args, opts: opts, read_acc: [], errno: nil, status: :init},
-     {:continue, nil}}
+    state = %{
+      cmd: path,
+      args: args,
+      opts: opts,
+      read_acc: [],
+      errno: nil,
+      status: :init,
+      await: %{}
+    }
+
+    {:ok, state, {:continue, nil}}
   end
 
   def handle_continue(nil, state) do
@@ -67,11 +84,23 @@ defmodule Exile.Process do
     end
   end
 
+  def handle_call(:exited?, _from, state), do: {:reply, !ProcessHelper.is_alive(state.pid), state}
+
   def handle_call(:os_pid, _from, state), do: {:reply, state.pid, state}
 
   def handle_call(_, _from, %{status: {:exit, status}}), do: {:reply, {:error, {:exit, status}}}
 
-  def handle_call(:await_exit, from, state), do: do_await_exit(state, from)
+  def handle_call({:await_exit, timeout}, from, state) do
+    tref =
+      if timeout != :infinity do
+        Process.send_after(self(), {:await_exit_timeout, from}, timeout)
+      else
+        nil
+      end
+
+    state = put_timer(state, from, :timeout, tref)
+    check_exit(state, from)
+  end
 
   def handle_call({:write, _binary}, _from, %{stdin: :closed} = state),
     do: {:reply, {:error, :closed}, state}
@@ -89,11 +118,31 @@ defmodule Exile.Process do
     end
   end
 
+  def handle_call({:kill, signal}, _from, state) do
+    do_kill(state.pid, signal)
+    {:reply, :ok, %{state | status: {:exit, :killed}}}
+  end
+
   def handle_info({:read, bytes, from}, state), do: do_read(state, bytes, from)
 
   def handle_info({:write, binary, from}, state), do: do_write(state, binary, from)
 
-  def handle_info({:await_exit, from}, state), do: do_await_exit(state, from)
+  def handle_info({:check_exit, from}, state), do: check_exit(state, from)
+
+  def handle_info({:await_exit_timeout, from}, state) do
+    cancel_timer(state, from, :check)
+
+    receive do
+      {:check_exit, ^from} -> :ok
+    after
+      0 -> :ok
+    end
+
+    GenServer.reply(from, :timeout)
+    {:noreply, clear_await(state, from)}
+  end
+
+  def handle_info(msg, _state), do: raise(msg)
 
   defp do_write(state, binary, from) do
     case ProcessHelper.write_proc(state.stdin, binary) do
@@ -171,19 +220,48 @@ defmodule Exile.Process do
     end
   end
 
-  defp do_await_exit(%{pid: pid} = state, from) do
+  defp check_exit(%{pid: pid} = state, from) do
     case ProcessHelper.wait_proc(pid) do
       {^pid, status} ->
-        {:reply, {:ok, status}, state}
+        GenServer.reply(from, {:ok, status})
+        cancel_timer(state, from, :timeout)
+        {:noreply, clear_await(state, from)}
 
       {0, _} ->
-        Process.send_after(self(), {:await_exit, from}, state.opts.io_busy_wait)
-        {:noreply, state}
+        tref = Process.send_after(self(), {:check_exit, from}, state.opts.io_busy_wait)
+        {:noreply, put_timer(state, from, :check, tref)}
 
       {-1, status} ->
-        {:reply, {:error, status}, state}
+        GenServer.reply(from, {:error, status})
+        cancel_timer(state, from, :timeout)
+        {:noreply, clear_await(state, from)}
     end
   end
+
+  defp do_kill(pid, :sigkill), do: ProcessHelper.kill_proc(pid)
+
+  defp do_kill(pid, :sigterm), do: ProcessHelper.terminate_proc(pid)
+
+  defp clear_await(state, from) do
+    %{state | await: Map.delete(state.await, from)}
+  end
+
+  defp cancel_timer(state, from, key) do
+    case get_timer(state, from, key) do
+      nil -> :ok
+      tref -> Process.cancel_timer(tref)
+    end
+  end
+
+  defp put_timer(state, from, key, timer) do
+    if Map.has_key?(state.await, from) do
+      put_in(state, [:await, from, key], timer)
+    else
+      put_in(state, [:await], %{from => %{key => timer}})
+    end
+  end
+
+  defp get_timer(state, from, key), do: get_in(state, [:await, from, key])
 
   @stdin_close_wait 3000
   @sigterm_wait 1000
@@ -199,19 +277,30 @@ defmodule Exile.Process do
 
         # TODO: should check if process is alreayd exit
         receive do
+          {:DOWN, ^ref, :process, ^parent, :normal} ->
+            :ok
+
           {:DOWN, ^ref, :process, ^parent, _reason} ->
-            with true <- ProcessHelper.is_alive(pid),
-                 _ <- ProcessHelper.close_pipe(stdin),
-                 _ <- ProcessHelper.close_pipe(stdout),
-                 _ <- :timer.sleep(@stdin_close_wait),
-                 {p, _} <- ProcessHelper.wait_proc(pid),
-                 false <- p != pid,
-                 _ <- ProcessHelper.terminate_proc(pid),
-                 _ <- :timer.sleep(@sigterm_wait),
-                 {p, _} <- ProcessHelper.wait_proc(pid),
-                 false <- p != pid,
-                 _ <- ProcessHelper.kill_proc(pid) do
-              Logger.debug(fn -> "Killed process: #{pid}" end)
+            case ProcessHelper.wait_proc(pid) do
+              {^pid, _status} ->
+                # TODO: check stauts
+                nil
+
+              _ ->
+                Logger.debug(fn -> "Killing #{pid}" end)
+
+                with _ <- ProcessHelper.close_pipe(stdin),
+                     _ <- ProcessHelper.close_pipe(stdout),
+                     _ <- :timer.sleep(@stdin_close_wait),
+                     {p, _} <- ProcessHelper.wait_proc(pid),
+                     false <- p != pid,
+                     _ <- ProcessHelper.terminate_proc(pid),
+                     _ <- :timer.sleep(@sigterm_wait),
+                     {p, _} <- ProcessHelper.wait_proc(pid),
+                     false <- p != pid,
+                     _ <- ProcessHelper.kill_proc(pid) do
+                  Logger.debug(fn -> "Killed process: #{pid}" end)
+                end
             end
         end
       end)
