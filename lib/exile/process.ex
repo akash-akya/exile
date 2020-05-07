@@ -48,7 +48,6 @@ defmodule Exile.Process do
     :errno,
     :context,
     :status,
-    :stdin_closed,
     await: %{},
     pending_read: nil,
     pending_write: nil
@@ -92,10 +91,9 @@ defmodule Exile.Process do
   end
 
   def handle_call(:stop, _from, state) do
-    # do_close(state, :stdin)
-    # do_close(state, :stdout)
-
     if ProcessHelper.is_alive(state.context) do
+      do_close(state, :stdin)
+      do_close(state, :stdout)
       do_kill(state.context, :sigkill)
       {:stop, :process_killed, :ok, %{state | status: {:exit, :killed}}}
     else
@@ -116,9 +114,6 @@ defmodule Exile.Process do
     state = put_timer(state, from, :timeout, tref)
     check_exit(state, from)
   end
-
-  def handle_call({:write, _binary}, _from, %Process{stdin_closed: true} = state),
-    do: {:reply, {:error, :closed}, state}
 
   def handle_call({:write, binary}, from, state) do
     pending = %Pending{bin: binary, client_pid: from}
@@ -254,14 +249,10 @@ defmodule Exile.Process do
 
   defp do_kill(context, :sigterm), do: ProcessHelper.terminate_proc(context)
 
-  defp do_close(%Process{stdin_closed: true} = state, type) do
-    {:reply, :ok, state}
-  end
-
   defp do_close(state, type) do
     case ProcessHelper.close_pipe(state.context, stream_type(type)) do
       :ok ->
-        {:reply, :ok, %Process{state | stdin_closed: true}}
+        {:reply, :ok, state}
 
       {:error, errno} ->
         raise errno
