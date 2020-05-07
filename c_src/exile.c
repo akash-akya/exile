@@ -10,6 +10,7 @@
 
 #define ERL_TRUE enif_make_atom(env, "true")
 #define ERL_FALSE enif_make_atom(env, "false")
+#define ERL_UNDEFINED enif_make_atom(env, "undefined")
 #define ERL_OK(term) enif_make_tuple2(env, enif_make_atom(env, "ok"), term)
 #define ERL_ERROR(term)                                                        \
   enif_make_tuple2(env, enif_make_atom(env, "error"), term)
@@ -35,6 +36,36 @@ typedef struct ExecResults {
   int pipe_in;
   int pipe_out;
 } ExecResult;
+
+struct ExilePriv {
+  /* ERL_NIF_TERM atom_ok; */
+  /* ERL_NIF_TERM atom_undefined; */
+
+  ErlNifResourceType *rt;
+  /* void *read_resource; */
+  /* void *write_resource; */
+};
+
+static void rt_dtor(ErlNifEnv *env, void *obj) {
+  printf("----- rt_dtor called\n");
+}
+
+static void rt_stop(ErlNifEnv *env, void *obj, int fd, int is_direct_call) {
+  printf("----- rt_stop called\n");
+}
+
+static void rt_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
+                    ErlNifMonitor *monitor) {
+  printf("----- rt_down called\n");
+}
+
+static ErlNifResourceTypeInit rt_init = {rt_dtor, rt_stop, rt_down};
+
+typedef struct ExecContext {
+  int cmd_input_fd;
+  int cmd_output_fd;
+  pid_t pid;
+} ExecContext;
 
 static int set_flag(int fd, int flags) {
   return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | flags);
@@ -137,8 +168,8 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
     if (enif_get_list_cell(env, list, &head, &tail) != true)
       return enif_make_badarg(env);
 
-    if (enif_get_string(env, head, tmp[i], MAX_ARGUMENT_LEN,
-                        ERL_NIF_LATIN1) < 1)
+    if (enif_get_string(env, head, tmp[i], MAX_ARGUMENT_LEN, ERL_NIF_LATIN1) <
+        1)
       return enif_make_badarg(env);
     exec_args[i] = tmp[i];
     list = tail;
@@ -151,41 +182,70 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
     return enif_make_badarg(env);
   stderr_to_console = tmp_int == 1 ? true : false;
 
+  struct ExilePriv *data = enif_priv_data(env);
   ExecResult result = start_proccess(exec_args, stderr_to_console);
   ERL_NIF_TERM ret;
+  ExecContext *ctx = NULL;
 
   switch (result.status) {
   case SUCCESS:
-    ret = enif_make_tuple3(env, enif_make_int(env, result.pid),
-                           enif_make_int(env, result.pipe_in),
-                           enif_make_int(env, result.pipe_out));
+    ctx = enif_alloc_resource(data->rt, sizeof(ExecContext));
+    ctx->cmd_input_fd = result.pipe_in;
+    ctx->cmd_output_fd = result.pipe_out;
+    ctx->pid = result.pid;
 
-    return ERL_OK(ret);
+    printf("cmd_in: %d cmd_out: %d pid: %d\n", result.pipe_in, result.pipe_out,
+           result.pid);
+
+    // TODO: exit the command gracefully when resource is released by GC
+    /* enif_release_resource(ctx); */
+
+    return ERL_OK(enif_make_resource(env, ctx));
   default:
     ret = enif_make_int(env, result.err);
     return ERL_ERROR(ret);
   }
 }
 
+static int select_write(ErlNifEnv *env, ExecContext *ctx) {
+  int retval = enif_select(env, ctx->cmd_input_fd, ERL_NIF_SELECT_WRITE, ctx,
+                           NULL, ERL_UNDEFINED);
+  if (retval != 0)
+    perror("select_write()");
+  return retval;
+}
+
 static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
                                const ERL_NIF_TERM argv[]) {
-  int pipe_in;
-  enif_get_int(env, argv[0], &pipe_in);
-
   if (argc != 2)
     enif_make_badarg(env);
+
+  struct ExilePriv *data = enif_priv_data(env);
+  ExecContext *ctx = NULL;
+  if (enif_get_resource(env, argv[0], data->rt, (void **)&ctx) == false) {
+    return enif_make_badarg(env);
+  }
 
   ErlNifBinary bin;
   if (enif_inspect_binary(env, argv[1], &bin) != true)
     return enif_make_badarg(env);
 
-  int result = write(pipe_in, bin.data, bin.size);
+  unsigned int result = write(ctx->cmd_input_fd, bin.data, bin.size);
 
-  if (result >= 0) {
+  // TODO: cleanup
+  if (result >= bin.size) { // request completely satisfied
     return ERL_OK(enif_make_int(env, result));
-  } else if (errno == EAGAIN) {
-    return ERL_ERROR(enif_make_int(env, errno));
-  } else {
+  } else if (result >= 0) { // request partially satisfied
+    int retval = select_write(env, ctx);
+    if (retval != 0)
+      return ERL_ERROR(enif_make_int(env, retval));
+    return ERL_OK(enif_make_int(env, result));
+  } else if (errno == EAGAIN) { // busy
+    int retval = select_write(env, ctx);
+    if (retval != 0)
+      return ERL_ERROR(enif_make_int(env, retval));
+    return ERL_ERROR(enif_make_int(env, EAGAIN));
+  } else { // Error
     perror("write()");
     return ERL_ERROR(enif_make_int(env, errno));
   }
@@ -193,10 +253,26 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
                                const ERL_NIF_TERM argv[]) {
-  int pipe;
-  enif_get_int(env, argv[0], &pipe);
+  struct ExilePriv *data = enif_priv_data(env);
+  ExecContext *ctx = NULL;
+  if (enif_get_resource(env, argv[0], data->rt, (void **)&ctx) == false) {
+    return enif_make_badarg(env);
+  }
 
-  int result = close(pipe);
+  int kind;
+  enif_get_int(env, argv[1], &kind);
+
+  int result;
+  switch (kind) {
+  case 0:
+    result = close(ctx->cmd_input_fd);
+    break;
+  case 1:
+    result = close(ctx->cmd_output_fd);
+    break;
+  default:
+    return enif_make_badarg(env);
+  }
 
   if (result == 0) {
     return enif_make_atom(env, "ok");
@@ -206,26 +282,66 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
   }
 }
 
+static int select_read(ErlNifEnv *env, ExecContext *ctx) {
+  int retval = enif_select(env, ctx->cmd_output_fd, ERL_NIF_SELECT_READ, ctx,
+                           NULL, ERL_UNDEFINED);
+  if (retval != 0)
+    perror("select_read()");
+  return retval;
+}
+
 static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  int pipe_out, bytes;
-  enif_get_int(env, argv[0], &pipe_out);
-  enif_get_int(env, argv[1], &bytes);
-
-  if (bytes > 65535 || bytes < 1)
+  if (argc != 2)
     enif_make_badarg(env);
 
-  char buf[bytes];
-  int result = read(pipe_out, buf, sizeof(buf));
+  struct ExilePriv *data = enif_priv_data(env);
+  ExecContext *ctx = NULL;
+  if (enif_get_resource(env, argv[0], data->rt, (void **)&ctx) == false) {
+    return enif_make_badarg(env);
+  }
 
+  bool is_buffered = true;
+  int size;
+  enif_get_int(env, argv[1], &size);
+
+  if (size == -1) {
+    size = 65535;
+    is_buffered = false;
+  } else if (size > 65535 || size < 1) {
+    enif_make_badarg(env);
+  }
+
+  unsigned char buf[size];
+  int result = read(ctx->cmd_output_fd, buf, sizeof(buf));
+
+  ERL_NIF_TERM bin_term;
   if (result >= 0) {
     ErlNifBinary bin;
     enif_alloc_binary(result, &bin);
+    // TODO: we should use binary when reading itself instead of allocating
+    // again
     memcpy(bin.data, buf, result);
-    return ERL_OK(enif_make_binary(env, &bin));
-  } else if (errno == EAGAIN) {
-    return ERL_ERROR(enif_make_int(env, errno));
-  } else {
+    bin_term = enif_make_binary(env, &bin);
+  }
+
+  // TODO: cleanup
+  if (result >= size ||
+      (is_buffered == false && result >= 0)) { // request completely satisfied
+    return ERL_OK(bin_term);
+  } else if (result > 0) { // request partially satisfied
+    int retval = select_read(env, ctx);
+    if (retval != 0)
+      return ERL_ERROR(enif_make_int(env, retval));
+    return ERL_OK(bin_term);
+  } else if (result == 0) { // EOF
+    return ERL_OK(bin_term);
+  } else if (errno == EAGAIN) { // busy
+    int retval = select_read(env, ctx);
+    if (retval != 0)
+      return ERL_ERROR(enif_make_int(env, retval));
+    return ERL_ERROR(enif_make_int(env, EAGAIN));
+  } else { // Error
     perror("read()");
     return ERL_ERROR(enif_make_int(env, errno));
   }
@@ -233,10 +349,13 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM is_alive(ErlNifEnv *env, int argc,
                              const ERL_NIF_TERM argv[]) {
-  int pid;
-  enif_get_int(env, argv[0], &pid);
+  struct ExilePriv *data = enif_priv_data(env);
+  ExecContext *ctx = NULL;
+  if (enif_get_resource(env, argv[0], data->rt, (void **)&ctx) == false) {
+    return enif_make_badarg(env);
+  }
 
-  int result = kill(pid, 0);
+  int result = kill(ctx->pid, 0);
 
   if (result == 0) {
     return ERL_TRUE;
@@ -247,37 +366,66 @@ static ERL_NIF_TERM is_alive(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM terminate_proc(ErlNifEnv *env, int argc,
                                    const ERL_NIF_TERM argv[]) {
-  int pid;
-  enif_get_int(env, argv[0], &pid);
-  return enif_make_int(env, kill(pid, SIGTERM));
+  struct ExilePriv *data = enif_priv_data(env);
+  ExecContext *ctx = NULL;
+  if (enif_get_resource(env, argv[0], data->rt, (void **)&ctx) == false) {
+    return enif_make_badarg(env);
+  }
+  return enif_make_int(env, kill(ctx->pid, SIGTERM));
 }
 
 static ERL_NIF_TERM kill_proc(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  int pid;
-  enif_get_int(env, argv[0], &pid);
-  return enif_make_int(env, kill(pid, SIGKILL));
+  struct ExilePriv *data = enif_priv_data(env);
+  ExecContext *ctx = NULL;
+  if (enif_get_resource(env, argv[0], data->rt, (void **)&ctx) == false) {
+    return enif_make_badarg(env);
+  }
+  return enif_make_int(env, kill(ctx->pid, SIGKILL));
 }
 
 static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  int pid, status;
-  enif_get_int(env, argv[0], &pid);
-
-  int wpid = waitpid(pid, &status, WNOHANG);
-  if (wpid != pid) {
-    perror("waitpid()");
+  struct ExilePriv *data = enif_priv_data(env);
+  ExecContext *ctx = NULL;
+  if (enif_get_resource(env, argv[0], data->rt, (void **)&ctx) == false) {
+    return enif_make_badarg(env);
   }
 
-  return enif_make_tuple2(env, enif_make_int(env, wpid),
-                          enif_make_int(env, status));
+  int status;
+  int wpid = waitpid(ctx->pid, &status, WNOHANG);
+
+  if (wpid == ctx->pid) {
+    return ERL_OK(enif_make_int(env, status));
+  } else {
+    perror("waitpid()");
+    ERL_NIF_TERM term = enif_make_tuple2(env, enif_make_int(env, wpid),
+                                         enif_make_int(env, status));
+    return ERL_ERROR(term);
+  }
+}
+
+static int load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
+  struct ExilePriv *data = enif_alloc(sizeof(struct ExilePriv));
+  if (!data)
+    return 1;
+
+  /* data->atom_ok = enif_make_atom(env, "ok"); */
+  /* data->atom_undefined = enif_make_atom(env, "undefined"); */
+
+  data->rt = enif_open_resource_type_x(env, "exile_resource", &rt_init,
+                                       ERL_NIF_RT_CREATE, NULL);
+
+  *priv = (void *)data;
+
+  return 0;
 }
 
 static ErlNifFunc nif_funcs[] = {
     {"exec_proc", 2, exec_proc, 0},           {"write_proc", 2, write_proc, 0},
-    {"read_proc", 2, read_proc, 0},           {"close_pipe", 1, close_pipe, 0},
+    {"read_proc", 2, read_proc, 0},           {"close_pipe", 2, close_pipe, 0},
     {"terminate_proc", 1, terminate_proc, 0}, {"wait_proc", 1, wait_proc, 0},
     {"kill_proc", 1, kill_proc, 0},           {"is_alive", 1, is_alive, 0},
 };
 
-ERL_NIF_INIT(Elixir.Exile.ProcessHelper, nif_funcs, NULL, NULL, NULL, NULL)
+ERL_NIF_INIT(Elixir.Exile.ProcessHelper, nif_funcs, &load, NULL, NULL, NULL)
