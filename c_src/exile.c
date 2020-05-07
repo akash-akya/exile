@@ -85,16 +85,16 @@ typedef struct ExecResult {
 } ExecResult;
 
 static void rt_dtor(ErlNifEnv *env, void *obj) {
-  printf("----- rt_dtor called\n");
+  debug("Exile rt_dtor called\n");
 }
 
 static void rt_stop(ErlNifEnv *env, void *obj, int fd, int is_direct_call) {
-  printf("----- rt_stop called\n");
+  debug("Exile rt_stop called\n");
 }
 
 static void rt_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
                     ErlNifMonitor *monitor) {
-  printf("----- rt_down called\n");
+  debug("Exile rt_down called\n");
 }
 
 static ErlNifResourceTypeInit rt_init = {rt_dtor, rt_stop, rt_down};
@@ -237,6 +237,7 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
   struct ExilePriv *data = enif_priv_data(env);
   ExecResult result = start_proccess(exec_args, stderr_to_console);
   ExecContext *ctx = NULL;
+  ERL_NIF_TERM term;
 
   switch (result.status) {
   case SUCCESS:
@@ -248,10 +249,12 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
     debug("pid: %d  cmd_in_fd: %d  cmd_out_fd: %d", ctx->pid, ctx->cmd_input_fd,
           ctx->cmd_output_fd);
 
-    // TODO: exit the command gracefully when resource is released by GC
-    /* enif_release_resource(ctx); */
+    term = enif_make_resource(env, ctx);
 
-    return MAKE_OK(enif_make_resource(env, ctx));
+    // resource should be collected beam GC when there are no more references
+    enif_release_resource(ctx);
+
+    return MAKE_OK(term);
   default:
     return MAKE_ERROR(enif_make_int(env, result.err));
   }
