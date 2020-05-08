@@ -1,5 +1,5 @@
 defmodule Exile.Process do
-  alias Exile.ProcessHelper
+  alias Exile.ProcessNif
   require Logger
   use GenServer
 
@@ -80,7 +80,7 @@ defmodule Exile.Process do
     exec_args = Enum.map(state.cmd_args, &to_charlist/1)
     stderr_to_console = if state.opts.stderr_to_console, do: 1, else: 0
 
-    case ProcessHelper.exec_proc([state.cmd | exec_args], stderr_to_console) do
+    case ProcessNif.exec_proc([state.cmd | exec_args], stderr_to_console) do
       {:ok, context} ->
         start_watcher(context)
         {:noreply, %Process{state | context: context, status: :start}}
@@ -91,14 +91,8 @@ defmodule Exile.Process do
   end
 
   def handle_call(:stop, _from, state) do
-    if ProcessHelper.is_alive(state.context) do
-      do_close(state, :stdin)
-      do_close(state, :stdout)
-      do_kill(state.context, :sigkill)
-      {:stop, :process_killed, :ok, %{state | status: {:exit, :killed}}}
-    else
-      {:stop, :normal, :ok, state}
-    end
+    # watcher will terminate the external process
+    {:stop, :normal, :ok, state}
   end
 
   def handle_call(_, _from, %{status: {:exit, status}}), do: {:reply, {:error, {:exit, status}}}
@@ -158,7 +152,7 @@ defmodule Exile.Process do
   def handle_info(msg, _state), do: raise(msg)
 
   defp do_write(%Process{pending_write: pending} = state) do
-    case ProcessHelper.write_proc(state.context, pending.bin) do
+    case ProcessNif.write_proc(state.context, pending.bin) do
       {:ok, size} ->
         if size < IO.iodata_length(pending.bin) do
           binary = IO.iodata_to_binary(pending.bin)
@@ -179,7 +173,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: %Pending{remaining: nil} = pending} = state) do
-    case ProcessHelper.read_proc(state.context, -1) do
+    case ProcessNif.read_proc(state.context, -1) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, []})
         {:noreply, state}
@@ -198,7 +192,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: pending} = state) do
-    case ProcessHelper.read_proc(state.context, pending.remaining) do
+    case ProcessNif.read_proc(state.context, pending.remaining) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, pending.bin})
         {:noreply, %Process{state | pending_read: %Pending{}}}
@@ -227,7 +221,7 @@ defmodule Exile.Process do
   end
 
   defp check_exit(state, from) do
-    case ProcessHelper.wait_proc(state.context) do
+    case ProcessNif.wait_proc(state.context) do
       {:ok, status} ->
         GenServer.reply(from, {:ok, status})
         cancel_timer(state, from, :timeout)
@@ -245,12 +239,12 @@ defmodule Exile.Process do
     end
   end
 
-  defp do_kill(context, :sigkill), do: ProcessHelper.kill_proc(context)
+  defp do_kill(context, :sigkill), do: ProcessNif.kill_proc(context)
 
-  defp do_kill(context, :sigterm), do: ProcessHelper.terminate_proc(context)
+  defp do_kill(context, :sigterm), do: ProcessNif.terminate_proc(context)
 
   defp do_close(state, type) do
-    case ProcessHelper.close_pipe(state.context, stream_type(type)) do
+    case ProcessNif.close_pipe(state.context, stream_type(type)) do
       :ok ->
         {:reply, :ok, state}
 
@@ -282,9 +276,6 @@ defmodule Exile.Process do
 
   defp get_timer(state, from, key), do: get_in(state.await, [from, key])
 
-  @stdin_close_wait 3000
-  @sigterm_wait 1000
-
   # Try to gracefully terminate external proccess if the genserver associated with the process is killed
   defp start_watcher(context) do
     process_server = self()
@@ -298,33 +289,50 @@ defmodule Exile.Process do
   defp stream_type(:stdin), do: 0
   defp stream_type(:stdout), do: 1
 
+  defp process_exit?(context) do
+    match?({:ok, _}, ProcessNif.wait_proc(context))
+  end
+
+  defp process_exit?(context, timeout) do
+    if process_exit?(context) do
+      true
+    else
+      :timer.sleep(timeout)
+      process_exit?(context)
+    end
+  end
+
+  # for proper process exit parent of the child *must* wait() for
+  # child processes termination exit and "pickup" after the exit
+  # (receive child exit_status). Resources acquired by child such as
+  # file descriptors won't be released even if the child process
+  # itself is terminated.
   defp watcher(process_server, context) do
     ref = Elixir.Process.monitor(process_server)
     send(process_server, {self(), :done})
 
     receive do
-      {:DOWN, ^ref, :process, ^process_server, :normal} ->
-        :ok
-
       {:DOWN, ^ref, :process, ^process_server, _reason} ->
-        case ProcessHelper.wait_proc(context) do
-          {:ok, _status} ->
-            # TODO: check stauts
-            nil
+        try do
+          process_exit?(context) && throw(:done)
 
-          {:error, {_, _}} ->
-            Logger.debug(fn -> "Killing" end)
+          Logger.debug(fn -> "Killing" end)
+          ProcessNif.close_pipe(context, stream_type(:stdin))
+          ProcessNif.close_pipe(context, stream_type(:stdout))
 
-            with _ <- ProcessHelper.close_pipe(context, stream_type(:stdin)),
-                 _ <- ProcessHelper.close_pipe(context, stream_type(:stdout)),
-                 _ <- :timer.sleep(@stdin_close_wait),
-                 {:error, _} <- ProcessHelper.wait_proc(context),
-                 _ <- ProcessHelper.terminate_proc(context),
-                 _ <- :timer.sleep(@sigterm_wait),
-                 {:error, _} <- ProcessHelper.wait_proc(context),
-                 _ <- ProcessHelper.kill_proc(context) do
-              Logger.debug(fn -> "Killed process" end)
-            end
+          # at max we wait for 100ms for program to exit
+          process_exit?(context, 100) && throw(:done)
+
+          ProcessNif.terminate_proc(context)
+          process_exit?(context, 100) && throw(:done)
+
+          ProcessNif.kill_proc(context)
+          process_exit?(context, 1000) && throw(:done)
+
+          Logger.error("[exile] failed to kill external process")
+          raise "Failed to kill external process"
+        catch
+          :done -> Logger.debug(fn -> "Exited external program successfully" end)
         end
     end
   end

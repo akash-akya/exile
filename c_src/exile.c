@@ -505,5 +505,5 @@ static ErlNifFunc nif_funcs[] = {
     {"kill_proc", 1, kill_proc, 0},           {"is_alive", 1, is_alive, 0},
 };
 
-ERL_NIF_INIT(Elixir.Exile.ProcessHelper, nif_funcs, &on_load, NULL, NULL,
+ERL_NIF_INIT(Elixir.Exile.ProcessNif, nif_funcs, &on_load, NULL, NULL,
              &on_unload)
