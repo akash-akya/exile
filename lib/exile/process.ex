@@ -1,4 +1,23 @@
 defmodule Exile.Process do
+  @moduledoc """
+  GenServer which wraps spawned external command.
+
+  One should use `ExCmd.stream!` over `Exile.Process`. stream internally manages this server for you. Use this only if you need more control over the  life-cycle OS process.
+
+  ## Overview
+  `Exile.Process` is an alternative primitive for Port. It has different interface and approach to running external programs to solve the issues associated with the ports.
+
+  ### When compared to Port
+    * it is demand driven. User explicitly has to `read` output of the command and the progress of the external command is controlled using OS pipes. so unlike Port, this never cause memory issues in beam by loading more than we can consume
+    * it can close stdin of the program explicitly
+    * does not create zombie process. It always tries to cleanup resources
+
+  At high level it makes non-blocking asynchronous system calls to execute and interact with the external program. It completely bypasses beam implementation for the same using NIF. It uses `select()` system call for asynchronous IO. Most of the system calls are non-blocking, so it does not has adverse effect on scheduler. Issues such as "scheduler collapse".
+
+  ### Obligatory NIF warning
+  As with any NIF based solution, bugs or issues in Exile implementation can bring down the beam VM. But NIF implementation is comparatively small and mostly uses POSIX system calls, spawned external processes are still completely isolated at OS level and the port issues it tries to solve are critical.
+  """
+
   alias Exile.ProcessNif
   require Logger
   use GenServer
