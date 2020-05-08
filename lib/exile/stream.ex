@@ -69,7 +69,7 @@ defmodule Exile.Stream do
               Process.kill(proc, :sigkill)
               raise "command fail to exit within timeout: #{stream_opts.exit_timeout}"
 
-            {:normal, {:ok, 0}} ->
+            {:normal, {:ok, {:exit, 0}}} ->
               :ok
 
             {:normal, {:ok, exit_status}} ->

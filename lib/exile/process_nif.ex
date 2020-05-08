@@ -20,5 +20,7 @@ defmodule Exile.ProcessNif do
 
   def wait_proc(_context), do: :erlang.nif_error(:nif_library_not_loaded)
 
+  def os_pid(_context), do: :erlang.nif_error(:nif_library_not_loaded)
+
   def is_alive(_context), do: :erlang.nif_error(:nif_library_not_loaded)
 end

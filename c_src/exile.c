@@ -45,11 +45,11 @@
     }                                                                          \
   } while (0);
 
-static const int PIPE_READ   = 0;
-static const int PIPE_WRITE  = 1;
+static const int PIPE_READ = 0;
+static const int PIPE_WRITE = 1;
 static const int PIPE_CLOSED = -1;
-static const int CMD_EXIT    = -1;
-static const int MAX_ARGUMENTS    = 20;
+static const int CMD_EXIT = -1;
+static const int MAX_ARGUMENTS = 20;
 static const int MAX_ARGUMENT_LEN = 1024;
 
 static ERL_NIF_TERM ATOM_OK;
@@ -57,6 +57,11 @@ static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_INVALID_CTX;
 static ERL_NIF_TERM ATOM_PIPE_CLOSED;
+
+// command exit types
+static ERL_NIF_TERM ATOM_EXIT;
+static ERL_NIF_TERM ATOM_SIGNALED;
+static ERL_NIF_TERM ATOM_STOPPED;
 
 enum exec_status {
   SUCCESS,
@@ -67,6 +72,8 @@ enum exec_status {
   NULL_DEV_OPEN_ERROR,
 };
 
+enum exit_type { NORMAL_EXIT, SIGNALED, STOPPED };
+
 typedef struct ExilePriv {
   ErlNifResourceType *rt;
 } ExilePriv;
@@ -74,7 +81,8 @@ typedef struct ExilePriv {
 typedef struct ExecContext {
   int cmd_input_fd;
   int cmd_output_fd;
-  int cmd_exit_status;
+  int exit_status; // can be exit status or signal number depending on exit_type
+  enum exit_type exit_type;
   pid_t pid;
 } ExecContext;
 
@@ -84,6 +92,7 @@ typedef struct ExecResult {
   ExecContext context;
 } ExecResult;
 
+// TODO: should we assert if external process exit here?
 static void rt_dtor(ErlNifEnv *env, void *obj) {
   debug("Exile rt_dtor called\n");
 }
@@ -145,6 +154,8 @@ static ExecResult start_proccess(char *args[], bool stderr_to_console) {
     RETURN_ERROR(PIPE_FLAG_ERROR)
   }
 
+  // TODO: fork() can be expensive. especially in mac os. we should report
+  // correct reduction cost for this at avoid potential scheduler collapse
   switch (pid = fork()) {
 
   case -1:
@@ -153,7 +164,9 @@ static ExecResult start_proccess(char *args[], bool stderr_to_console) {
 
   case 0: // child
 
-    // close default stdio fd
+    // TODO: check if we are leaking any resources such as opened fd to child
+    // program close default stdio fd
+
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
 
@@ -281,12 +294,13 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
     return MAKE_ERROR(ATOM_PIPE_CLOSED);
 
   ErlNifBinary bin;
+  // TODO: should not use enif_inspect_binary
   if (enif_inspect_binary(env, argv[1], &bin) != true)
     return enif_make_badarg(env);
 
   unsigned int result = write(ctx->cmd_input_fd, bin.data, bin.size);
 
-  // TODO: cleanup
+  // TODO: branching is quite ugly, cleanup required
   if (result >= bin.size) { // request completely satisfied
     return MAKE_OK(enif_make_int(env, result));
   } else if (result >= 0) { // request partially satisfied
@@ -384,13 +398,13 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
   if (result >= 0) {
     ErlNifBinary bin;
     enif_alloc_binary(result, &bin);
-    // TODO: we should use binary when reading itself instead of allocating
-    // again
+    // TODO: we should use the erl binary for `read` itself instead of
+    // allocating again
     memcpy(bin.data, buf, result);
     bin_term = enif_make_binary(env, &bin);
   }
 
-  // TODO: cleanup
+  // TODO: branching is quite ugly, cleanup required
   if (result >= size ||
       (is_buffered == false && result >= 0)) { // request completely satisfied
     return MAKE_OK(bin_term);
@@ -436,7 +450,7 @@ static ERL_NIF_TERM terminate_proc(ErlNifEnv *env, int argc,
   if (ctx->pid == CMD_EXIT)
     return MAKE_OK(enif_make_int(env, 0));
 
-  return enif_make_int(env, kill(ctx->pid, SIGTERM));
+  return MAKE_OK(enif_make_int(env, kill(ctx->pid, SIGTERM)));
 }
 
 static ERL_NIF_TERM kill_proc(ErlNifEnv *env, int argc,
@@ -446,7 +460,25 @@ static ERL_NIF_TERM kill_proc(ErlNifEnv *env, int argc,
   if (ctx->pid == CMD_EXIT)
     return MAKE_OK(enif_make_int(env, 0));
 
-  return enif_make_int(env, kill(ctx->pid, SIGKILL));
+  return MAKE_OK(enif_make_int(env, kill(ctx->pid, SIGKILL)));
+}
+
+static ERL_NIF_TERM make_exit_term(ErlNifEnv *env, ExecContext *ctx) {
+  switch (ctx->exit_type) {
+  case NORMAL_EXIT:
+    return MAKE_OK(
+        enif_make_tuple2(env, ATOM_EXIT, enif_make_int(env, ctx->exit_status)));
+  case SIGNALED:
+    // exit_status here points to signal number
+    return MAKE_OK(enif_make_tuple2(env, ATOM_SIGNALED,
+                                    enif_make_int(env, ctx->exit_status)));
+  case STOPPED:
+    return MAKE_OK(enif_make_tuple2(env, ATOM_STOPPED,
+                                    enif_make_int(env, ctx->exit_status)));
+  default:
+    error("Invalid wait status");
+    return MAKE_ERROR(ATOM_UNDEFINED);
+  }
 }
 
 static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
@@ -455,22 +487,42 @@ static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
   GET_CTX(env, argv[0], ctx);
 
   if (ctx->pid == CMD_EXIT)
-    return MAKE_OK(enif_make_int(env, ctx->cmd_exit_status));
+    return make_exit_term(env, ctx);
 
   int status;
   int wpid = waitpid(ctx->pid, &status, WNOHANG);
 
   if (wpid == ctx->pid) {
     ctx->pid = CMD_EXIT;
-    ctx->cmd_exit_status = status;
-    return MAKE_OK(enif_make_int(env, status));
+
+    if (WIFEXITED(status)) {
+      ctx->exit_type = NORMAL_EXIT;
+      ctx->exit_status = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+      ctx->exit_type = SIGNALED;
+      ctx->exit_status = WTERMSIG(status);
+    } else if (WIFSTOPPED(status)) {
+      ctx->exit_type = STOPPED;
+      ctx->exit_status = 0;
+    }
+
+    return make_exit_term(env, ctx);
   } else if (wpid != 0) {
     perror("waitpid()");
   }
   ERL_NIF_TERM term = enif_make_tuple2(env, enif_make_int(env, wpid),
                                        enif_make_int(env, status));
   return MAKE_ERROR(term);
+}
 
+static ERL_NIF_TERM os_pid(ErlNifEnv *env, int argc,
+                           const ERL_NIF_TERM argv[]) {
+  ExecContext *ctx = NULL;
+  GET_CTX(env, argv[0], ctx);
+  if (ctx->pid == CMD_EXIT)
+    return MAKE_OK(enif_make_int(env, 0));
+
+  return MAKE_OK(enif_make_int(env, ctx->pid));
 }
 
 static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
@@ -486,7 +538,10 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   ATOM_ERROR = enif_make_atom(env, "error");
   ATOM_UNDEFINED = enif_make_atom(env, "undefined");
   ATOM_INVALID_CTX = enif_make_atom(env, "invalid_exile_exec_ctx");
-  ATOM_INVALID_CTX = enif_make_atom(env, "closed_pipe");
+  ATOM_PIPE_CLOSED = enif_make_atom(env, "closed_pipe");
+  ATOM_EXIT = enif_make_atom(env, "exit");
+  ATOM_SIGNALED = enif_make_atom(env, "signaled");
+  ATOM_STOPPED = enif_make_atom(env, "stopped");
 
   *priv = (void *)data;
 
@@ -498,11 +553,18 @@ static void on_unload(ErlNifEnv *env, void *priv) {
   enif_free(priv);
 }
 
+// maybe we can use dirty schedulers conditionally by checking if they are
+// available or not at compile time
 static ErlNifFunc nif_funcs[] = {
-    {"exec_proc", 2, exec_proc, 0},           {"write_proc", 2, write_proc, 0},
-    {"read_proc", 2, read_proc, 0},           {"close_pipe", 2, close_pipe, 0},
-    {"terminate_proc", 1, terminate_proc, 0}, {"wait_proc", 1, wait_proc, 0},
-    {"kill_proc", 1, kill_proc, 0},           {"is_alive", 1, is_alive, 0},
+    {"exec_proc", 2, exec_proc, 0},
+    {"write_proc", 2, write_proc, 0},
+    {"read_proc", 2, read_proc, 0},
+    {"close_pipe", 2, close_pipe, 0},
+    {"terminate_proc", 1, terminate_proc, 0},
+    {"wait_proc", 1, wait_proc, 0},
+    {"kill_proc", 1, kill_proc, 0},
+    {"is_alive", 1, is_alive, 0},
+    {"os_pid", 1, os_pid, 0},
 };
 
 ERL_NIF_INIT(Elixir.Exile.ProcessNif, nif_funcs, &on_load, NULL, NULL,

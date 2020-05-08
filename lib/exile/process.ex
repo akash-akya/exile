@@ -21,8 +21,12 @@ defmodule Exile.Process do
     GenServer.call(process, {:write, binary}, :infinity)
   end
 
-  def read(process, bytes) do
-    GenServer.call(process, {:read, bytes}, :infinity)
+  def read(process, size) when is_integer(size) do
+    GenServer.call(process, {:read, size}, :infinity)
+  end
+
+  def read(process) do
+    GenServer.call(process, {:read, nil}, :infinity)
   end
 
   def kill(process, signal) when signal in [:sigkill, :sigterm] do
@@ -31,6 +35,10 @@ defmodule Exile.Process do
 
   def await_exit(process, timeout \\ :infinity) do
     GenServer.call(process, {:await_exit, timeout}, :infinity)
+  end
+
+  def os_pid(process, timeout \\ :infinity) do
+    GenServer.call(process, :os_pid, :infinity)
   end
 
   def stop(process), do: GenServer.call(process, :stop, :infinity)
@@ -91,7 +99,10 @@ defmodule Exile.Process do
   end
 
   def handle_call(:stop, _from, state) do
-    # watcher will terminate the external process
+    # watcher will take care of termination of external process
+
+    # TODO: pending write and read should receive "stopped" return
+    # value instead of exit signal
     {:stop, :normal, :ok, state}
   end
 
@@ -109,7 +120,7 @@ defmodule Exile.Process do
     check_exit(state, from)
   end
 
-  def handle_call({:write, binary}, from, state) do
+  def handle_call({:write, binary}, from, state) when is_binary(binary) do
     pending = %Pending{bin: binary, client_pid: from}
     do_write(%Process{state | pending_write: pending})
   end
@@ -120,6 +131,8 @@ defmodule Exile.Process do
   end
 
   def handle_call(:close_stdin, _from, state), do: do_close(state, :stdin)
+
+  def handle_call(:os_pid, _from, state), do: {:reply, ProcessNif.os_pid(state.context), state}
 
   def handle_call({:kill, signal}, _from, state) do
     do_kill(state.context, signal)
@@ -154,9 +167,8 @@ defmodule Exile.Process do
   defp do_write(%Process{pending_write: pending} = state) do
     case ProcessNif.write_proc(state.context, pending.bin) do
       {:ok, size} ->
-        if size < IO.iodata_length(pending.bin) do
-          binary = IO.iodata_to_binary(pending.bin)
-          binary = binary_part(binary, size, IO.iodata_length(pending.bin) - size)
+        if size < byte_size(pending.bin) do
+          binary = binary_part(pending.bin, size, byte_size(pending.bin) - size)
           {:noreply, %{state | pending_write: %Pending{bin: binary}}}
         else
           GenServer.reply(pending.client_pid, :ok)
@@ -198,11 +210,11 @@ defmodule Exile.Process do
         {:noreply, %Process{state | pending_read: %Pending{}}}
 
       {:ok, binary} ->
-        if IO.iodata_length(binary) < pending.remaining do
+        if byte_size(binary) < pending.remaining do
           pending = %Pending{
             pending
             | bin: [pending.bin | binary],
-              remaining: pending.remaining - IO.iodata_length(binary)
+              remaining: pending.remaining - byte_size(binary)
           }
 
           {:noreply, %Process{state | pending_read: pending}}
@@ -316,16 +328,18 @@ defmodule Exile.Process do
         try do
           process_exit?(context) && throw(:done)
 
-          Logger.debug(fn -> "Killing" end)
+          Logger.debug(fn -> "Stopping external program" end)
           ProcessNif.close_pipe(context, stream_type(:stdin))
           ProcessNif.close_pipe(context, stream_type(:stdout))
 
           # at max we wait for 100ms for program to exit
           process_exit?(context, 100) && throw(:done)
 
+          Logger.debug("Failed to stop external program gracefully. attempting SIGTERM")
           ProcessNif.terminate_proc(context)
           process_exit?(context, 100) && throw(:done)
 
+          Logger.debug("Failed to stop external program with SIGTERM. attempting SIGKILL")
           ProcessNif.kill_proc(context)
           process_exit?(context, 1000) && throw(:done)
 
