@@ -485,14 +485,14 @@ static ERL_NIF_TERM is_alive(ErlNifEnv *env, int argc,
   GET_CTX(env, argv[0], ctx);
 
   if (ctx->pid == CMD_EXIT)
-    return ATOM_FALSE;
+    return make_ok(env, ATOM_TRUE);
 
   int result = kill(ctx->pid, 0);
 
   if (result == 0) {
-    return ATOM_TRUE;
+    return make_ok(env, ATOM_TRUE);
   } else {
-    return ATOM_FALSE;
+    return make_ok(env, ATOM_FALSE);
   }
 }
 
