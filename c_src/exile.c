@@ -68,6 +68,7 @@ static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_INVALID_CTX;
 static ERL_NIF_TERM ATOM_PIPE_CLOSED;
 static ERL_NIF_TERM ATOM_EAGAIN;
+static ERL_NIF_TERM ATOM_ALLOC_FAILED;
 
 /* command exit types */
 static ERL_NIF_TERM ATOM_EXIT;
@@ -141,7 +142,8 @@ static void close_all(int pipes[2][2]) {
 }
 
 /* time is assumed to be in microseconds */
-static void notify_consumed_timeslice(ErlNifEnv *env, ErlNifTime start, ErlNifTime stop) {
+static void notify_consumed_timeslice(ErlNifEnv *env, ErlNifTime start,
+                                      ErlNifTime stop) {
   ErlNifTime pct;
 
   pct = (ErlNifTime)((stop - start) / 10);
@@ -340,7 +342,6 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
     return make_error(env, ATOM_PIPE_CLOSED);
 
   ErlNifBinary bin;
-  /* TODO: should not use enif_inspect_binary */
   if (enif_inspect_binary(env, argv[1], &bin) != true)
     return enif_make_badarg(env);
 
@@ -443,16 +444,13 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
   }
 
   unsigned char buf[size];
-  int result = read(ctx->cmd_output_fd, buf, sizeof(buf));
+  int result = read(ctx->cmd_output_fd, buf, size);
 
   ERL_NIF_TERM bin_term = 0;
   if (result >= 0) {
-    ErlNifBinary bin;
-    enif_alloc_binary(result, &bin);
-    /* TODO: we should use the erl binary for `read` itself instead of
-     * allocating again */
-    memcpy(bin.data, buf, result);
-    bin_term = enif_make_binary(env, &bin);
+    /* no need to release this binary */
+    unsigned char *temp = enif_make_new_binary(env, result, &bin_term);
+    memcpy(temp, buf, result);
   }
 
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
@@ -598,6 +596,7 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   ATOM_SIGNALED = enif_make_atom(env, "signaled");
   ATOM_STOPPED = enif_make_atom(env, "stopped");
   ATOM_EAGAIN = enif_make_atom(env, "eagain");
+  ATOM_ALLOC_FAILED = enif_make_atom(env, "alloc_failed");
 
   *priv = (void *)data;
 
