@@ -30,10 +30,6 @@
     enif_fprintf(stderr, "\n");                                                \
   } while (0)
 
-#define ERL_TRUE enif_make_atom(env, "true")
-#define ERL_FALSE enif_make_atom(env, "false")
-#define ERL_UNDEFINED enif_make_atom(env, "undefined")
-
 #define MAKE_OK(term) enif_make_tuple2(env, ATOM_OK, term)
 #define MAKE_ERROR(term) enif_make_tuple2(env, ATOM_ERROR, term)
 
@@ -52,6 +48,8 @@ static const int CMD_EXIT = -1;
 static const int MAX_ARGUMENTS = 20;
 static const int MAX_ARGUMENT_LEN = 1024;
 
+static ERL_NIF_TERM ATOM_TRUE;
+static ERL_NIF_TERM ATOM_FALSE;
 static ERL_NIF_TERM ATOM_OK;
 static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_UNDEFINED;
@@ -92,7 +90,7 @@ typedef struct ExecResult {
   ExecContext context;
 } ExecResult;
 
-// TODO: should we assert if external process exit here?
+// TODO: assert if the external process is exit (?)
 static void rt_dtor(ErlNifEnv *env, void *obj) {
   debug("Exile rt_dtor called\n");
 }
@@ -275,7 +273,7 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
 
 static int select_write(ErlNifEnv *env, ExecContext *ctx) {
   int retval = enif_select(env, ctx->cmd_input_fd, ERL_NIF_SELECT_WRITE, ctx,
-                           NULL, ERL_UNDEFINED);
+                           NULL, ATOM_UNDEFINED);
   if (retval != 0)
     perror("select_write()");
 
@@ -300,7 +298,7 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
 
   unsigned int result = write(ctx->cmd_input_fd, bin.data, bin.size);
 
-  // TODO: branching is quite ugly, cleanup required
+  // TODO: branching is ugly, cleanup required
   if (result >= bin.size) { // request completely satisfied
     return MAKE_OK(enif_make_int(env, result));
   } else if (result >= 0) { // request partially satisfied
@@ -363,7 +361,7 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
 
 static int select_read(ErlNifEnv *env, ExecContext *ctx) {
   int retval = enif_select(env, ctx->cmd_output_fd, ERL_NIF_SELECT_READ, ctx,
-                           NULL, ERL_UNDEFINED);
+                           NULL, ATOM_UNDEFINED);
   if (retval != 0)
     perror("select_read()");
   return retval;
@@ -404,7 +402,7 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
     bin_term = enif_make_binary(env, &bin);
   }
 
-  // TODO: branching is quite ugly, cleanup required
+  // TODO: branching is ugly, cleanup required
   if (result >= size ||
       (is_buffered == false && result >= 0)) { // request completely satisfied
     return MAKE_OK(bin_term);
@@ -432,14 +430,14 @@ static ERL_NIF_TERM is_alive(ErlNifEnv *env, int argc,
   GET_CTX(env, argv[0], ctx);
 
   if (ctx->pid == CMD_EXIT)
-    return ERL_FALSE;
+    return ATOM_FALSE;
 
   int result = kill(ctx->pid, 0);
 
   if (result == 0) {
-    return ERL_TRUE;
+    return ATOM_TRUE;
   } else {
-    return ERL_FALSE;
+    return ATOM_FALSE;
   }
 }
 
@@ -534,6 +532,8 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
       enif_open_resource_type_x(env, "exile_resource", &rt_init,
                                 ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, NULL);
 
+  ATOM_TRUE = enif_make_atom(env, "true");
+  ATOM_FALSE = enif_make_atom(env, "false");
   ATOM_OK = enif_make_atom(env, "ok");
   ATOM_ERROR = enif_make_atom(env, "error");
   ATOM_UNDEFINED = enif_make_atom(env, "undefined");
@@ -553,8 +553,8 @@ static void on_unload(ErlNifEnv *env, void *priv) {
   enif_free(priv);
 }
 
-// maybe we can use dirty schedulers conditionally by checking if they are
-// available or not at compile time
+// TODO: we can use dirty schedulers conditionally at compile time by checking
+// if they are available or not (?)
 static ErlNifFunc nif_funcs[] = {
     {"exec_proc", 2, exec_proc, 0},
     {"write_proc", 2, write_proc, 0},
