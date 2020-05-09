@@ -35,13 +35,13 @@ defmodule Exile.ProcessTest do
 
     # parallel reader should be blocked till we close stdin
     start_parallel_reader(s, logger)
-    :timer.sleep(50)
+    :timer.sleep(100)
 
     assert :ok == Process.write(s, "hello")
     add_event(logger, {:write, "hello"})
     assert :ok == Process.write(s, "world")
     add_event(logger, {:write, "world"})
-    :timer.sleep(50)
+    :timer.sleep(100)
 
     assert :ok == Process.close_stdin(s)
     add_event(logger, :input_close)
@@ -88,14 +88,18 @@ defmodule Exile.ProcessTest do
     assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
   end
 
+  # this test does not work properly in linux
+  @tag :skip
   test "if we are leaking file descriptor" do
-    # we are only printing FD, TYPE, NAME with respective prefix
-    {:ok, s} = Process.start_link(fixture("opened_fds.sh"), [])
-    :timer.seconds(100)
-    {:eof, iodata} = Process.read(s, 10000)
-    assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+    {:ok, s} = Process.start_link("sleep", ["60"])
+    {:ok, os_pid} = Process.os_pid(s)
 
-    open_files = parse_lsof(iodata)
+    # we are only printing FD, TYPE, NAME with respective prefix
+    {bin, 0} = System.cmd("lsof", ["-F", "ftn", "-p", to_string(os_pid)])
+
+    Process.stop(s)
+
+    open_files = parse_lsof(bin)
     assert [%{fd: "0", name: _, type: "PIPE"}, %{type: "PIPE", fd: "1", name: _}] = open_files
   end
 
@@ -169,8 +173,27 @@ defmodule Exile.ProcessTest do
     end)
     |> Enum.reverse()
     |> Enum.reject(fn
-      %{fd: fd} when fd in ["255", "cwd", "txt"] -> true
-      _ -> false
+      %{fd: fd} when fd in ["255", "cwd", "txt"] ->
+        true
+
+      %{fd: "rtd", name: "/", type: "DIR"} ->
+        true
+
+      # filter libc and friends
+      %{fd: "mem", type: "REG", name: "/lib/x86_64-linux-gnu/" <> _} ->
+        true
+
+      %{fd: "mem", type: "REG", name: "/usr/lib/locale/C.UTF-8/" <> _} ->
+        true
+
+      %{fd: "mem", type: "REG", name: "/usr/lib/locale/locale-archive" <> _} ->
+        true
+
+      %{fd: "mem", type: "REG", name: "/usr/lib/x86_64-linux-gnu/gconv" <> _} ->
+        true
+
+      _ ->
+        false
     end)
   end
 end
