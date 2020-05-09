@@ -81,7 +81,7 @@ defmodule Exile.ProcessTest do
 
   test "exit status" do
     {:ok, s} = Process.start_link(fixture("exit_with.sh"), ["2"])
-    assert {:ok, {:exit, 2}} == Process.await_exit(s, 200)
+    assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
   end
 
   test "process kill with pending write" do
@@ -102,7 +102,7 @@ defmodule Exile.ProcessTest do
 
     :timer.sleep(200)
     Process.stop(s)
-    :timer.sleep(100)
+    :timer.sleep(3000)
 
     refute os_process_alive?(os_pid)
     assert {:normal, _} = Task.await(task)
