@@ -2,7 +2,7 @@ defmodule Exile.Process do
   @moduledoc """
   GenServer which wraps spawned external command.
 
-  One should use `ExCmd.stream!` over `Exile.Process`. stream internally manages this server for you. Use this only if you need more control over the  life-cycle OS process.
+  One should use `Exile.stream!` over `Exile.Process`. stream internally manages this server for you. Use this only if you need more control over the  life-cycle OS process.
 
   ## Overview
   `Exile.Process` is an alternative primitive for Port. It has different interface and approach to running external programs to solve the issues associated with the ports.
@@ -23,6 +23,7 @@ defmodule Exile.Process do
   use GenServer
 
   defmacro eagain(), do: 35
+  defmacro fork_exec_failure(), do: 125
 
   # delay between retries when io is busy (in milliseconds)
   @default_opts %{io_busy_wait: 1, stderr_to_console: false}
@@ -253,6 +254,11 @@ defmodule Exile.Process do
 
   defp check_exit(state, from) do
     case ProcessNif.wait_proc(state.context) do
+      {:ok, {:exit, fork_exec_failure()}} ->
+        GenServer.reply(from, {:error, :failed_to_execute})
+        cancel_timer(state, from, :timeout)
+        {:noreply, clear_await(state, from)}
+
       {:ok, status} ->
         GenServer.reply(from, {:ok, status})
         cancel_timer(state, from, :timeout)
