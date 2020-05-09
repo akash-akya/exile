@@ -44,7 +44,8 @@
 #define GET_CTX(env, arg, ctx)                                                 \
   do {                                                                         \
     ExilePriv *data = enif_priv_data(env);                                     \
-    if (enif_get_resource(env, arg, data->rt, (void **)&ctx) == false) {       \
+    if (enif_get_resource(env, arg, data->exec_ctx_rt, (void **)&ctx) ==       \
+        false) {                                                               \
       return make_error(env, ATOM_INVALID_CTX);                                \
     }                                                                          \
   } while (0);
@@ -87,7 +88,8 @@ enum exec_status {
 enum exit_type { NORMAL_EXIT, SIGNALED, STOPPED };
 
 typedef struct ExilePriv {
-  ErlNifResourceType *rt;
+  ErlNifResourceType *exec_ctx_rt;
+  ErlNifResourceType *io_rt;
 } ExilePriv;
 
 typedef struct ExecContext {
@@ -96,6 +98,9 @@ typedef struct ExecContext {
   int exit_status; // can be exit status or signal number depending on exit_type
   enum exit_type exit_type;
   pid_t pid;
+  // these are to hold enif_select resource objects
+  int *read_resource;
+  int *write_resource;
 } ExecContext;
 
 typedef struct StartProcessResult {
@@ -105,20 +110,42 @@ typedef struct StartProcessResult {
 } StartProcessResult;
 
 /* TODO: assert if the external process is exit (?) */
-static void rt_dtor(ErlNifEnv *env, void *obj) {
-  debug("Exile rt_dtor called\n");
+static void exec_ctx_dtor(ErlNifEnv *env, void *obj) {
+  ExecContext *ctx = obj;
+  enif_release_resource(ctx->read_resource);
+  enif_release_resource(ctx->write_resource);
+  debug("Exile exec_ctx_dtor called");
 }
 
-static void rt_stop(ErlNifEnv *env, void *obj, int fd, int is_direct_call) {
-  debug("Exile rt_stop called\n");
+static void exec_ctx_stop(ErlNifEnv *env, void *obj, int fd,
+                          int is_direct_call) {
+  debug("Exile exec_ctx_stop called");
 }
 
-static void rt_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
-                    ErlNifMonitor *monitor) {
-  debug("Exile rt_down called\n");
+static void exec_ctx_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
+                          ErlNifMonitor *monitor) {
+  debug("Exile exec_ctx_down called");
 }
 
-static ErlNifResourceTypeInit rt_init = {rt_dtor, rt_stop, rt_down};
+static ErlNifResourceTypeInit exec_ctx_rt_init = {exec_ctx_dtor, exec_ctx_stop,
+                                                  exec_ctx_down};
+
+static void io_resource_dtor(ErlNifEnv *env, void *obj) {
+  debug("Exile io_resource_dtor called");
+}
+
+static void io_resource_stop(ErlNifEnv *env, void *obj, int fd,
+                             int is_direct_call) {
+  debug("Exile io_resource_stop called %d", fd);
+}
+
+static void io_resource_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
+                             ErlNifMonitor *monitor) {
+  debug("Exile io_resource_down called");
+}
+
+static ErlNifResourceTypeInit io_rt_init = {io_resource_dtor, io_resource_stop,
+                                            io_resource_down};
 
 static inline ERL_NIF_TERM make_ok(ErlNifEnv *env, ERL_NIF_TERM term) {
   return enif_make_tuple2(env, ATOM_OK, term);
@@ -297,9 +324,11 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
   ERL_NIF_TERM term;
 
   if (result.success) {
-    ctx = enif_alloc_resource(data->rt, sizeof(ExecContext));
+    ctx = enif_alloc_resource(data->exec_ctx_rt, sizeof(ExecContext));
     ctx->cmd_input_fd = result.context.cmd_input_fd;
     ctx->cmd_output_fd = result.context.cmd_output_fd;
+    ctx->read_resource = enif_alloc_resource(data->io_rt, sizeof(int));
+    ctx->write_resource = enif_alloc_resource(data->io_rt, sizeof(int));
     ctx->pid = result.context.pid;
 
     debug("pid: %d  cmd_in_fd: %d  cmd_out_fd: %d", ctx->pid, ctx->cmd_input_fd,
@@ -319,8 +348,8 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
 }
 
 static int select_write(ErlNifEnv *env, ExecContext *ctx) {
-  int retval = enif_select(env, ctx->cmd_input_fd, ERL_NIF_SELECT_WRITE, ctx,
-                           NULL, ATOM_UNDEFINED);
+  int retval = enif_select(env, ctx->cmd_input_fd, ERL_NIF_SELECT_WRITE,
+                           ctx->write_resource, NULL, ATOM_UNDEFINED);
   if (retval != 0)
     perror("select_write()");
 
@@ -382,6 +411,8 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
     if (ctx->cmd_input_fd == PIPE_CLOSED) {
       return ATOM_OK;
     } else {
+      enif_select(env, ctx->cmd_input_fd, ERL_NIF_SELECT_STOP,
+                  ctx->write_resource, NULL, ATOM_UNDEFINED);
       result = close(ctx->cmd_input_fd);
       if (result == 0) {
         ctx->cmd_input_fd = PIPE_CLOSED;
@@ -395,6 +426,8 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
     if (ctx->cmd_output_fd == PIPE_CLOSED) {
       return ATOM_OK;
     } else {
+      enif_select(env, ctx->cmd_output_fd, ERL_NIF_SELECT_STOP,
+                  ctx->read_resource, NULL, ATOM_UNDEFINED);
       result = close(ctx->cmd_output_fd);
       if (result == 0) {
         ctx->cmd_output_fd = PIPE_CLOSED;
@@ -411,8 +444,8 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
 }
 
 static int select_read(ErlNifEnv *env, ExecContext *ctx) {
-  int retval = enif_select(env, ctx->cmd_output_fd, ERL_NIF_SELECT_READ, ctx,
-                           NULL, ATOM_UNDEFINED);
+  int retval = enif_select(env, ctx->cmd_output_fd, ERL_NIF_SELECT_READ,
+                           ctx->read_resource, NULL, ATOM_UNDEFINED);
   if (retval != 0)
     perror("select_read()");
   return retval;
@@ -581,8 +614,11 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   if (!data)
     return 1;
 
-  data->rt =
-      enif_open_resource_type_x(env, "exile_resource", &rt_init,
+  data->exec_ctx_rt =
+      enif_open_resource_type_x(env, "exile_resource", &exec_ctx_rt_init,
+                                ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, NULL);
+  data->io_rt =
+      enif_open_resource_type_x(env, "exile_resource", &io_rt_init,
                                 ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, NULL);
 
   ATOM_TRUE = enif_make_atom(env, "true");

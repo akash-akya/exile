@@ -173,13 +173,9 @@ defmodule Exile.Process do
     {:noreply, clear_await(state, from)}
   end
 
-  def handle_info({:select, context, _ref, :ready_output}, state) do
-    do_write(%Process{state | context: context})
-  end
+  def handle_info({:select, _write_resource, _ref, :ready_output}, state), do: do_write(state)
 
-  def handle_info({:select, context, _ref, :ready_input}, state) do
-    do_read(%Process{state | context: context})
-  end
+  def handle_info({:select, _read_resource, _ref, :ready_input}, state), do: do_read(state)
 
   def handle_info(msg, _state), do: raise(msg)
 
@@ -350,11 +346,13 @@ defmodule Exile.Process do
     receive do
       {:DOWN, ^ref, :process, ^process_server, _reason} ->
         try do
-          process_exit?(context) && throw(:done)
-
           Logger.debug(fn -> "Stopping external program" end)
+
+          # close_pipe is idempotent, calling it multiple times is okay
           ProcessNif.close_pipe(context, stream_type(:stdin))
           ProcessNif.close_pipe(context, stream_type(:stdout))
+
+          process_exit?(context) && throw(:done)
 
           # at max we wait for 100ms for program to exit
           process_exit?(context, 100) && throw(:done)
