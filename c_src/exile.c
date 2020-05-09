@@ -1,3 +1,7 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "erl_nif.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -6,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 //#define DEBUG
@@ -405,7 +410,7 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
   unsigned char buf[size];
   int result = read(ctx->cmd_output_fd, buf, sizeof(buf));
 
-  ERL_NIF_TERM bin_term;
+  ERL_NIF_TERM bin_term = 0;
   if (result >= 0) {
     ErlNifBinary bin;
     enif_alloc_binary(result, &bin);
