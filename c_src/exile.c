@@ -13,6 +13,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifdef ERTS_DIRTY_SCHEDULERS
+#define USE_DIRTY_IO ERL_NIF_DIRTY_JOB_IO_BOUND
+#else
+#define USE_DIRTY_IO 0
+#endif
+
 //#define DEBUG
 
 #ifdef DEBUG
@@ -578,18 +584,16 @@ static void on_unload(ErlNifEnv *env, void *priv) {
   enif_free(priv);
 }
 
-/* TODO: we can use dirty schedulers conditionally at compile time by checking
- * if they are available or not (?) */
 static ErlNifFunc nif_funcs[] = {
-    {"exec_proc", 2, exec_proc, 0},
-    {"write_proc", 2, write_proc, 0},
-    {"read_proc", 2, read_proc, 0},
-    {"close_pipe", 2, close_pipe, 0},
-    {"terminate_proc", 1, terminate_proc, 0},
-    {"wait_proc", 1, wait_proc, 0},
-    {"kill_proc", 1, kill_proc, 0},
-    {"is_alive", 1, is_alive, 0},
-    {"os_pid", 1, os_pid, 0},
+    {"exec_proc", 2, exec_proc, USE_DIRTY_IO},
+    {"write_proc", 2, write_proc, USE_DIRTY_IO},
+    {"read_proc", 2, read_proc, USE_DIRTY_IO},
+    {"close_pipe", 2, close_pipe, USE_DIRTY_IO},
+    {"terminate_proc", 1, terminate_proc, USE_DIRTY_IO},
+    {"wait_proc", 1, wait_proc, USE_DIRTY_IO},
+    {"kill_proc", 1, kill_proc, USE_DIRTY_IO},
+    {"is_alive", 1, is_alive, USE_DIRTY_IO},
+    {"os_pid", 1, os_pid, USE_DIRTY_IO},
 };
 
 ERL_NIF_INIT(Elixir.Exile.ProcessNif, nif_funcs, &on_load, NULL, NULL,
