@@ -4,8 +4,8 @@ defmodule Exile.ProcessTest do
 
   test "read" do
     {:ok, s} = Process.start_link("echo", ["test"])
-    assert {:ok, "test\n"} == Process.read(s)
-    assert {:eof, []} == Process.read(s)
+    assert {:eof, iodata} = Process.read(s, 100)
+    assert IO.iodata_to_binary(iodata) == "test\n"
     assert :ok == Process.close_stdin(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
   end
@@ -13,9 +13,13 @@ defmodule Exile.ProcessTest do
   test "write" do
     {:ok, s} = Process.start_link("cat", [])
     assert :ok == Process.write(s, "hello")
-    assert {:ok, "hello"} == Process.read(s)
+    assert {:ok, iodata} = Process.read(s, 5)
+    assert IO.iodata_to_binary(iodata) == "hello"
+
     assert :ok == Process.write(s, "world")
-    assert {:ok, "world"} == Process.read(s)
+    assert {:ok, iodata} = Process.read(s, 5)
+    assert IO.iodata_to_binary(iodata) == "world"
+
     assert :ok == Process.close_stdin(s)
     assert {:eof, []} == Process.read(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 100)
@@ -88,7 +92,7 @@ defmodule Exile.ProcessTest do
     # we are only printing FD, TYPE, NAME with respective prefix
     {:ok, s} = Process.start_link(fixture("opened_fds.sh"), [])
     :timer.seconds(100)
-    {:eof, iodata} = Process.read(s, 1000)
+    {:eof, iodata} = Process.read(s, 10000)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
 
     open_files = parse_lsof(iodata)

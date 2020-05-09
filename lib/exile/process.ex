@@ -22,7 +22,6 @@ defmodule Exile.Process do
   require Logger
   use GenServer
 
-  defmacro eagain(), do: 35
   defmacro fork_exec_failure(), do: 125
 
   # delay between retries when io is busy (in milliseconds)
@@ -195,7 +194,7 @@ defmodule Exile.Process do
           {:noreply, %{state | pending_write: %Pending{}}}
         end
 
-      {:error, eagain()} ->
+      {:error, :eagain} ->
         {:noreply, state}
 
       {:error, errno} ->
@@ -214,7 +213,7 @@ defmodule Exile.Process do
         GenServer.reply(pending.client_pid, {:ok, binary})
         {:noreply, state}
 
-      {:error, eagain()} ->
+      {:error, :eagain} ->
         {:noreply, state}
 
       {:error, errno} ->
@@ -243,7 +242,7 @@ defmodule Exile.Process do
           {:noreply, %Process{state | pending_read: %Pending{}}}
         end
 
-      {:error, eagain()} ->
+      {:error, :eagain} ->
         {:noreply, state}
 
       {:error, errno} ->

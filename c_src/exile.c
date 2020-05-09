@@ -64,6 +64,7 @@ static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_INVALID_CTX;
 static ERL_NIF_TERM ATOM_PIPE_CLOSED;
+static ERL_NIF_TERM ATOM_EAGAIN;
 
 /* command exit types */
 static ERL_NIF_TERM ATOM_EXIT;
@@ -328,7 +329,7 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
     int retval = select_write(env, ctx);
     if (retval != 0)
       return MAKE_ERROR(enif_make_int(env, retval));
-    return MAKE_ERROR(enif_make_int(env, EAGAIN));
+    return MAKE_ERROR(ATOM_EAGAIN);
   } else { // Error
     perror("write()");
     return MAKE_ERROR(enif_make_int(env, errno));
@@ -435,7 +436,7 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
     int retval = select_read(env, ctx);
     if (retval != 0)
       return MAKE_ERROR(enif_make_int(env, retval));
-    return MAKE_ERROR(enif_make_int(env, EAGAIN));
+    return MAKE_ERROR(ATOM_EAGAIN);
   } else { // Error
     perror("read()");
     return MAKE_ERROR(enif_make_int(env, errno));
@@ -560,6 +561,7 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   ATOM_EXIT = enif_make_atom(env, "exit");
   ATOM_SIGNALED = enif_make_atom(env, "signaled");
   ATOM_STOPPED = enif_make_atom(env, "stopped");
+  ATOM_EAGAIN = enif_make_atom(env, "eagain");
 
   *priv = (void *)data;
 
