@@ -35,14 +35,11 @@
     enif_fprintf(stderr, "\n");                                                \
   } while (0)
 
-#define MAKE_OK(term) enif_make_tuple2(env, ATOM_OK, term)
-#define MAKE_ERROR(term) enif_make_tuple2(env, ATOM_ERROR, term)
-
 #define GET_CTX(env, arg, ctx)                                                 \
   do {                                                                         \
     ExilePriv *data = enif_priv_data(env);                                     \
     if (enif_get_resource(env, arg, data->rt, (void **)&ctx) == false) {       \
-      return MAKE_ERROR(ATOM_INVALID_CTX);                                     \
+      return make_error(env, ATOM_INVALID_CTX);                                \
     }                                                                          \
   } while (0);
 
@@ -115,6 +112,14 @@ static void rt_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
 }
 
 static ErlNifResourceTypeInit rt_init = {rt_dtor, rt_stop, rt_down};
+
+static inline ERL_NIF_TERM make_ok(ErlNifEnv *env, ERL_NIF_TERM term) {
+  return enif_make_tuple2(env, ATOM_OK, term);
+}
+
+static inline ERL_NIF_TERM make_error(ErlNifEnv *env, ERL_NIF_TERM term) {
+  return enif_make_tuple2(env, ATOM_ERROR, term);
+}
 
 static int set_flag(int fd, int flags) {
   return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | flags);
@@ -284,9 +289,9 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
     /* resource should be collected beam GC when there are no more references */
     enif_release_resource(ctx);
 
-    return MAKE_OK(term);
+    return make_ok(env, term);
   } else {
-    return MAKE_ERROR(enif_make_int(env, result.err));
+    return make_error(env, enif_make_int(env, result.err));
   }
 }
 
@@ -308,7 +313,7 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
   GET_CTX(env, argv[0], ctx);
 
   if (ctx->cmd_input_fd == PIPE_CLOSED)
-    return MAKE_ERROR(ATOM_PIPE_CLOSED);
+    return make_error(env, ATOM_PIPE_CLOSED);
 
   ErlNifBinary bin;
   /* TODO: should not use enif_inspect_binary */
@@ -319,20 +324,20 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
 
   /* TODO: branching is ugly, cleanup required */
   if (result >= bin.size) { // request completely satisfied
-    return MAKE_OK(enif_make_int(env, result));
+    return make_ok(env, enif_make_int(env, result));
   } else if (result >= 0) { // request partially satisfied
     int retval = select_write(env, ctx);
     if (retval != 0)
-      return MAKE_ERROR(enif_make_int(env, retval));
-    return MAKE_OK(enif_make_int(env, result));
+      return make_error(env, enif_make_int(env, retval));
+    return make_ok(env, enif_make_int(env, result));
   } else if (errno == EAGAIN) { // busy
     int retval = select_write(env, ctx);
     if (retval != 0)
-      return MAKE_ERROR(enif_make_int(env, retval));
-    return MAKE_ERROR(ATOM_EAGAIN);
+      return make_error(env, enif_make_int(env, retval));
+    return make_error(env, ATOM_EAGAIN);
   } else { // Error
     perror("write()");
-    return MAKE_ERROR(enif_make_int(env, errno));
+    return make_error(env, enif_make_int(env, errno));
   }
 }
 
@@ -356,7 +361,7 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
         return ATOM_OK;
       } else {
         perror("cmd_input_fd close()");
-        return MAKE_ERROR(enif_make_int(env, errno));
+        return make_error(env, enif_make_int(env, errno));
       }
     }
   case 1:
@@ -369,7 +374,7 @@ static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
         return ATOM_OK;
       } else {
         perror("cmd_output_fd close()");
-        return MAKE_ERROR(enif_make_int(env, errno));
+        return make_error(env, enif_make_int(env, errno));
       }
     }
   default:
@@ -395,7 +400,7 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
   GET_CTX(env, argv[0], ctx);
 
   if (ctx->cmd_output_fd == PIPE_CLOSED)
-    return MAKE_ERROR(ATOM_PIPE_CLOSED);
+    return make_error(env, ATOM_PIPE_CLOSED);
 
   bool is_buffered = true;
   int size;
@@ -424,22 +429,22 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
   /* TODO: branching is ugly, cleanup required */
   if (result >= size ||
       (is_buffered == false && result >= 0)) { // request completely satisfied
-    return MAKE_OK(bin_term);
+    return make_ok(env, bin_term);
   } else if (result > 0) { // request partially satisfied
     int retval = select_read(env, ctx);
     if (retval != 0)
-      return MAKE_ERROR(enif_make_int(env, retval));
-    return MAKE_OK(bin_term);
+      return make_error(env, enif_make_int(env, retval));
+    return make_ok(env, bin_term);
   } else if (result == 0) { // EOF
-    return MAKE_OK(bin_term);
+    return make_ok(env, bin_term);
   } else if (errno == EAGAIN) { // busy
     int retval = select_read(env, ctx);
     if (retval != 0)
-      return MAKE_ERROR(enif_make_int(env, retval));
-    return MAKE_ERROR(ATOM_EAGAIN);
+      return make_error(env, enif_make_int(env, retval));
+    return make_error(env, ATOM_EAGAIN);
   } else { // Error
     perror("read()");
-    return MAKE_ERROR(enif_make_int(env, errno));
+    return make_error(env, enif_make_int(env, errno));
   }
 }
 
@@ -465,9 +470,9 @@ static ERL_NIF_TERM terminate_proc(ErlNifEnv *env, int argc,
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
   if (ctx->pid == CMD_EXIT)
-    return MAKE_OK(enif_make_int(env, 0));
+    return make_ok(env, enif_make_int(env, 0));
 
-  return MAKE_OK(enif_make_int(env, kill(ctx->pid, SIGTERM)));
+  return make_ok(env, enif_make_int(env, kill(ctx->pid, SIGTERM)));
 }
 
 static ERL_NIF_TERM kill_proc(ErlNifEnv *env, int argc,
@@ -475,26 +480,26 @@ static ERL_NIF_TERM kill_proc(ErlNifEnv *env, int argc,
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
   if (ctx->pid == CMD_EXIT)
-    return MAKE_OK(enif_make_int(env, 0));
+    return make_ok(env, enif_make_int(env, 0));
 
-  return MAKE_OK(enif_make_int(env, kill(ctx->pid, SIGKILL)));
+  return make_ok(env, enif_make_int(env, kill(ctx->pid, SIGKILL)));
 }
 
 static ERL_NIF_TERM make_exit_term(ErlNifEnv *env, ExecContext *ctx) {
   switch (ctx->exit_type) {
   case NORMAL_EXIT:
-    return MAKE_OK(
-        enif_make_tuple2(env, ATOM_EXIT, enif_make_int(env, ctx->exit_status)));
+    return make_ok(env, enif_make_tuple2(env, ATOM_EXIT,
+                                         enif_make_int(env, ctx->exit_status)));
   case SIGNALED:
     /* exit_status here points to signal number */
-    return MAKE_OK(enif_make_tuple2(env, ATOM_SIGNALED,
-                                    enif_make_int(env, ctx->exit_status)));
+    return make_ok(env, enif_make_tuple2(env, ATOM_SIGNALED,
+                                         enif_make_int(env, ctx->exit_status)));
   case STOPPED:
-    return MAKE_OK(enif_make_tuple2(env, ATOM_STOPPED,
-                                    enif_make_int(env, ctx->exit_status)));
+    return make_ok(env, enif_make_tuple2(env, ATOM_STOPPED,
+                                         enif_make_int(env, ctx->exit_status)));
   default:
     error("Invalid wait status");
-    return MAKE_ERROR(ATOM_UNDEFINED);
+    return make_error(env, ATOM_UNDEFINED);
   }
 }
 
@@ -529,7 +534,7 @@ static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
   }
   ERL_NIF_TERM term = enif_make_tuple2(env, enif_make_int(env, wpid),
                                        enif_make_int(env, status));
-  return MAKE_ERROR(term);
+  return make_error(env, term);
 }
 
 static ERL_NIF_TERM os_pid(ErlNifEnv *env, int argc,
@@ -537,9 +542,9 @@ static ERL_NIF_TERM os_pid(ErlNifEnv *env, int argc,
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
   if (ctx->pid == CMD_EXIT)
-    return MAKE_OK(enif_make_int(env, 0));
+    return make_ok(env, enif_make_int(env, 0));
 
-  return MAKE_OK(enif_make_int(env, ctx->pid));
+  return make_ok(env, enif_make_int(env, ctx->pid));
 }
 
 static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
