@@ -140,6 +140,18 @@ static void close_all(int pipes[2][2]) {
   }
 }
 
+/* time is assumed to be in microseconds */
+static void notify_consumed_timeslice(ErlNifEnv *env, ErlNifTime start, ErlNifTime stop) {
+  ErlNifTime pct;
+
+  pct = (ErlNifTime)((stop - start) / 10);
+  if (pct > 100)
+    pct = 100;
+  else if (pct == 0)
+    pct = 1;
+  enif_consume_timeslice(env, pct);
+}
+
 /* This is not ideal, but as of now there is no portable way to do this */
 static void close_all_fds() {
   int fd_limit = (int)sysconf(_SC_OPEN_MAX);
@@ -174,8 +186,6 @@ static StartProcessResult start_proccess(char *args[], bool stderr_to_console) {
     return result;
   }
 
-  /* TODO: fork() can be expensive. especially in mac os. we should report
-   * correct reduction cost for this to avoid potential scheduler collapse */
   switch (pid = fork()) {
 
   case -1:
@@ -249,8 +259,11 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
   char tmp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN + 1];
   char *exec_args[MAX_ARGUMENTS + 1];
-
+  ErlNifTime start;
   unsigned int args_len;
+
+  start = enif_monotonic_time(ERL_NIF_USEC);
+
   if (enif_get_list_length(env, argv[0], &args_len) != true)
     return enif_make_badarg(env);
 
@@ -295,6 +308,8 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
     /* resource should be collected beam GC when there are no more references */
     enif_release_resource(ctx);
 
+    notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
+
     return make_ok(env, term);
   } else {
     return make_error(env, enif_make_int(env, result.err));
@@ -315,6 +330,9 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
   if (argc != 2)
     enif_make_badarg(env);
 
+  ErlNifTime start;
+  start = enif_monotonic_time(ERL_NIF_USEC);
+
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
 
@@ -327,6 +345,8 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
     return enif_make_badarg(env);
 
   unsigned int result = write(ctx->cmd_input_fd, bin.data, bin.size);
+
+  notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
   /* TODO: branching is ugly, cleanup required */
   if (result >= bin.size) { // request completely satisfied
@@ -402,6 +422,9 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
   if (argc != 2)
     enif_make_badarg(env);
 
+  ErlNifTime start;
+  start = enif_monotonic_time(ERL_NIF_USEC);
+
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
 
@@ -431,6 +454,8 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
     memcpy(bin.data, buf, result);
     bin_term = enif_make_binary(env, &bin);
   }
+
+  notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
   /* TODO: branching is ugly, cleanup required */
   if (result >= size ||
