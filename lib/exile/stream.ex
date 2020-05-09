@@ -72,8 +72,8 @@ defmodule Exile.Stream do
             {:normal, {:ok, {:exit, 0}}} ->
               :ok
 
-            {:normal, {:ok, exit_status}} ->
-              raise "command exited with status: #{exit_status}"
+            {:normal, {:ok, error}} ->
+              raise "command exited with status: #{inspect(error)}"
 
             {_, error} ->
               Process.kill(proc, :sigkill)

@@ -40,12 +40,12 @@ defmodule Exile.Process do
     GenServer.call(process, {:write, binary}, :infinity)
   end
 
-  def read(process, size) when is_integer(size) do
+  def read(process, size) when is_integer(size) or size == :unbuffered do
     GenServer.call(process, {:read, size}, :infinity)
   end
 
   def read(process) do
-    GenServer.call(process, {:read, nil}, :infinity)
+    GenServer.call(process, {:read, :unbuffered}, :infinity)
   end
 
   def kill(process, signal) when signal in [:sigkill, :sigterm] do
@@ -144,8 +144,8 @@ defmodule Exile.Process do
     do_write(%Process{state | pending_write: pending})
   end
 
-  def handle_call({:read, bytes}, from, state) do
-    pending = %Pending{remaining: bytes, client_pid: from}
+  def handle_call({:read, size}, from, state) do
+    pending = %Pending{remaining: size, client_pid: from}
     do_read(%Process{state | pending_read: pending})
   end
 
@@ -203,7 +203,7 @@ defmodule Exile.Process do
     end
   end
 
-  defp do_read(%Process{pending_read: %Pending{remaining: nil} = pending} = state) do
+  defp do_read(%Process{pending_read: %Pending{remaining: :unbuffered} = pending} = state) do
     case ProcessNif.read_proc(state.context, -1) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, []})
