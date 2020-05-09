@@ -188,7 +188,7 @@ defmodule Exile.Process do
       {:ok, size} ->
         if size < byte_size(pending.bin) do
           binary = binary_part(pending.bin, size, byte_size(pending.bin) - size)
-          {:noreply, %{state | pending_write: %Pending{bin: binary}}}
+          {:noreply, %{state | pending_write: %Pending{pending | bin: binary}}}
         else
           GenServer.reply(pending.client_pid, :ok)
           {:noreply, %{state | pending_write: %Pending{}}}
@@ -370,7 +370,7 @@ defmodule Exile.Process do
           Logger.error("[exile] failed to kill external process")
           raise "Failed to kill external process"
         catch
-          :done -> Logger.debug(fn -> "Exited external program successfully" end)
+          :done -> Logger.debug(fn -> "External program exited successfully" end)
         end
     end
   end
