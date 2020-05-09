@@ -48,6 +48,10 @@ static const int CMD_EXIT = -1;
 static const int MAX_ARGUMENTS = 20;
 static const int MAX_ARGUMENT_LEN = 1024;
 
+/* We are choosing an exit code which is not reserved see:
+ * https://www.tldp.org/LDP/abs/html/exitcodes.html. */
+static const int FORK_EXEC_FAILURE = 125;
+
 static ERL_NIF_TERM ATOM_TRUE;
 static ERL_NIF_TERM ATOM_FALSE;
 static ERL_NIF_TERM ATOM_OK;
@@ -56,7 +60,7 @@ static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_INVALID_CTX;
 static ERL_NIF_TERM ATOM_PIPE_CLOSED;
 
-// command exit types
+/* command exit types */
 static ERL_NIF_TERM ATOM_EXIT;
 static ERL_NIF_TERM ATOM_SIGNALED;
 static ERL_NIF_TERM ATOM_STOPPED;
@@ -84,13 +88,13 @@ typedef struct ExecContext {
   pid_t pid;
 } ExecContext;
 
-typedef struct ExecResult {
-  enum exec_status status;
+typedef struct StartProcessResult {
+  bool success;
   int err;
   ExecContext context;
-} ExecResult;
+} StartProcessResult;
 
-// TODO: assert if the external process is exit (?)
+/* TODO: assert if the external process is exit (?) */
 static void rt_dtor(ErlNifEnv *env, void *obj) {
   debug("Exile rt_dtor called\n");
 }
@@ -119,24 +123,23 @@ static void close_all(int pipes[2][2]) {
   }
 }
 
-#define RETURN_ERROR(__err)                                                    \
-  do {                                                                         \
-    result.err = errno;                                                        \
-    result.status = __err;                                                     \
-    close_all(pipes);                                                          \
-    error("error in start_proccess(), %s:%d %s", __FILE__, __LINE__,           \
-          strerror(errno));                                                    \
-    return result;                                                             \
-  } while (0);
+/* This is not ideal, but as of now there is no portable way to do this */
+static void close_all_fds() {
+  int fd_limit = (int)sysconf(_SC_OPEN_MAX);
+  for (int i = STDERR_FILENO + 1; i < fd_limit; i++)
+    close(i);
+}
 
-static ExecResult start_proccess(char *args[], bool stderr_to_console) {
-  ExecResult result;
+static StartProcessResult start_proccess(char *args[], bool stderr_to_console) {
+  StartProcessResult result = {.success = false};
   pid_t pid;
   int pipes[2][2] = {{0, 0}, {0, 0}};
 
   if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1) {
-    debug("failed create pipes");
-    RETURN_ERROR(PIPE_CREATE_ERROR)
+    result.err = errno;
+    perror("[exile] failed to create pipes");
+    close_all(pipes);
+    return result;
   }
 
   const int r_cmdin = pipes[STDIN_FILENO][PIPE_READ];
@@ -148,33 +151,42 @@ static ExecResult start_proccess(char *args[], bool stderr_to_console) {
   if (set_flag(r_cmdin, O_CLOEXEC) < 0 || set_flag(w_cmdout, O_CLOEXEC) < 0 ||
       set_flag(w_cmdin, O_CLOEXEC | O_NONBLOCK) < 0 ||
       set_flag(r_cmdout, O_CLOEXEC | O_NONBLOCK) < 0) {
-    debug("failed to set flag for pipes");
-    RETURN_ERROR(PIPE_FLAG_ERROR)
+    result.err = errno;
+    perror("[exile] failed to set flags for pipes");
+    close_all(pipes);
+    return result;
   }
 
-  // TODO: fork() can be expensive. especially in mac os. we should report
-  // correct reduction cost for this at avoid potential scheduler collapse
+  /* TODO: fork() can be expensive. especially in mac os. we should report
+   * correct reduction cost for this to avoid potential scheduler collapse */
   switch (pid = fork()) {
 
   case -1:
-    debug("failed to fork");
-    RETURN_ERROR(FORK_ERROR)
+    result.err = errno;
+    perror("[exile] failed to fork");
+    close_all(pipes);
+    return result;
 
   case 0: // child
-
-    // TODO: check if we are leaking any resources such as opened fd to child
-    // program close default stdio fd
 
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
 
     if (dup2(r_cmdin, STDIN_FILENO) < 0) {
-      debug("failed dup command input pipe to stdin");
-      RETURN_ERROR(PIPE_DUP_ERROR)
+      perror("[exile] failed to dup to stdin");
+
+      /* We are assuming FORK_EXEC_FAILURE exit code wont be used by the command
+       * we are running. Technically we can not assume any exit code here. The
+       * parent can not differentiate between exit before `exec` and the normal
+       * command exit.
+       * One correct way to solve this might be to have a separate
+       * pipe shared between child and parent and signaling the parent by
+       * closing it or writing to it. */
+      _exit(FORK_EXEC_FAILURE);
     }
     if (dup2(w_cmdout, STDOUT_FILENO) < 0) {
-      debug("failed dup command output pipe to stdout");
-      RETURN_ERROR(PIPE_DUP_ERROR)
+      perror("[exile] failed to dup to stdout");
+      _exit(FORK_EXEC_FAILURE);
     }
 
     if (stderr_to_console != true) {
@@ -182,32 +194,34 @@ static ExecResult start_proccess(char *args[], bool stderr_to_console) {
       int dev_null = open("/dev/null", O_WRONLY);
 
       if (dev_null == -1) {
-        RETURN_ERROR(NULL_DEV_OPEN_ERROR);
+        perror("[exile] failed to open /dev/null");
+        _exit(FORK_EXEC_FAILURE);
       }
 
       if (dup2(dev_null, STDERR_FILENO) < 0) {
-        debug("failed dup command error pipe to stderr");
-        close(dev_null);
-        RETURN_ERROR(PIPE_DUP_ERROR)
+        perror("[exile] failed to dup stderr");
+        _exit(FORK_EXEC_FAILURE);
       }
 
       close(dev_null);
     }
 
-    close_all(pipes);
+    close_all_fds();
 
     execvp(args[0], args);
-    perror("execvp(): failed");
+    perror("[exile] execvp(): failed");
+
+    _exit(FORK_EXEC_FAILURE);
 
   default: // parent
-    // close file descriptors used by child
+    /* close file descriptors used by child */
     close(r_cmdin);
     close(w_cmdout);
 
+    result.success = true;
     result.context.pid = pid;
     result.context.cmd_input_fd = w_cmdin;
     result.context.cmd_output_fd = r_cmdout;
-    result.status = SUCCESS;
 
     return result;
   }
@@ -246,12 +260,11 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
   stderr_to_console = tmp_int == 1 ? true : false;
 
   struct ExilePriv *data = enif_priv_data(env);
-  ExecResult result = start_proccess(exec_args, stderr_to_console);
+  StartProcessResult result = start_proccess(exec_args, stderr_to_console);
   ExecContext *ctx = NULL;
   ERL_NIF_TERM term;
 
-  switch (result.status) {
-  case SUCCESS:
+  if (result.success) {
     ctx = enif_alloc_resource(data->rt, sizeof(ExecContext));
     ctx->cmd_input_fd = result.context.cmd_input_fd;
     ctx->cmd_output_fd = result.context.cmd_output_fd;
@@ -262,11 +275,11 @@ static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
 
     term = enif_make_resource(env, ctx);
 
-    // resource should be collected beam GC when there are no more references
+    /* resource should be collected beam GC when there are no more references */
     enif_release_resource(ctx);
 
     return MAKE_OK(term);
-  default:
+  } else {
     return MAKE_ERROR(enif_make_int(env, result.err));
   }
 }
@@ -292,13 +305,13 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
     return MAKE_ERROR(ATOM_PIPE_CLOSED);
 
   ErlNifBinary bin;
-  // TODO: should not use enif_inspect_binary
+  /* TODO: should not use enif_inspect_binary */
   if (enif_inspect_binary(env, argv[1], &bin) != true)
     return enif_make_badarg(env);
 
   unsigned int result = write(ctx->cmd_input_fd, bin.data, bin.size);
 
-  // TODO: branching is ugly, cleanup required
+  /* TODO: branching is ugly, cleanup required */
   if (result >= bin.size) { // request completely satisfied
     return MAKE_OK(enif_make_int(env, result));
   } else if (result >= 0) { // request partially satisfied
@@ -396,13 +409,13 @@ static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
   if (result >= 0) {
     ErlNifBinary bin;
     enif_alloc_binary(result, &bin);
-    // TODO: we should use the erl binary for `read` itself instead of
-    // allocating again
+    /* TODO: we should use the erl binary for `read` itself instead of
+     * allocating again */
     memcpy(bin.data, buf, result);
     bin_term = enif_make_binary(env, &bin);
   }
 
-  // TODO: branching is ugly, cleanup required
+  /* TODO: branching is ugly, cleanup required */
   if (result >= size ||
       (is_buffered == false && result >= 0)) { // request completely satisfied
     return MAKE_OK(bin_term);
@@ -467,7 +480,7 @@ static ERL_NIF_TERM make_exit_term(ErlNifEnv *env, ExecContext *ctx) {
     return MAKE_OK(
         enif_make_tuple2(env, ATOM_EXIT, enif_make_int(env, ctx->exit_status)));
   case SIGNALED:
-    // exit_status here points to signal number
+    /* exit_status here points to signal number */
     return MAKE_OK(enif_make_tuple2(env, ATOM_SIGNALED,
                                     enif_make_int(env, ctx->exit_status)));
   case STOPPED:
@@ -553,8 +566,8 @@ static void on_unload(ErlNifEnv *env, void *priv) {
   enif_free(priv);
 }
 
-// TODO: we can use dirty schedulers conditionally at compile time by checking
-// if they are available or not (?)
+/* TODO: we can use dirty schedulers conditionally at compile time by checking
+ * if they are available or not (?) */
 static ErlNifFunc nif_funcs[] = {
     {"exec_proc", 2, exec_proc, 0},
     {"write_proc", 2, write_proc, 0},

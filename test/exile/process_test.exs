@@ -80,8 +80,19 @@ defmodule Exile.ProcessTest do
   end
 
   test "exit status" do
-    {:ok, s} = Process.start_link(fixture("exit_with.sh"), ["2"])
+    {:ok, s} = Process.start_link("sh", ~w(-c "exit 2"))
     assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
+  end
+
+  test "if we are leaking file descriptor" do
+    # we are only printing FD, TYPE, NAME with respective prefix
+    {:ok, s} = Process.start_link(fixture("opened_fds.sh"), [])
+    :timer.seconds(100)
+    {:eof, iodata} = Process.read(s, 1000)
+    assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+
+    open_files = parse_lsof(iodata)
+    assert [%{fd: "0", name: _, type: "PIPE"}, %{type: "PIPE", fd: "1", name: _}] = open_files
   end
 
   test "process kill with pending write" do
@@ -142,5 +153,20 @@ defmodule Exile.ProcessTest do
 
   defp fixture(script) do
     Path.join([__DIR__, "../scripts", script])
+  end
+
+  defp parse_lsof(iodata) do
+    String.split(IO.iodata_to_binary(iodata), "\n", trim: true)
+    |> Enum.reduce([], fn
+      "f" <> fd, acc -> [%{fd: fd} | acc]
+      "t" <> type, [h | acc] -> [Map.put(h, :type, type) | acc]
+      "n" <> name, [h | acc] -> [Map.put(h, :name, name) | acc]
+      _, acc -> acc
+    end)
+    |> Enum.reverse()
+    |> Enum.reject(fn
+      %{fd: fd} when fd in ["255", "cwd", "txt"] -> true
+      _ -> false
+    end)
   end
 end

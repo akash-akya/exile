@@ -56,7 +56,7 @@ defmodule Exile.Process do
     GenServer.call(process, {:await_exit, timeout}, :infinity)
   end
 
-  def os_pid(process, timeout \\ :infinity) do
+  def os_pid(process) do
     GenServer.call(process, :os_pid, :infinity)
   end
 
