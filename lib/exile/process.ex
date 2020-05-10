@@ -24,8 +24,8 @@ defmodule Exile.Process do
 
   defmacro fork_exec_failure(), do: 125
 
-  # delay between retries when io is busy (in milliseconds)
-  @default_opts %{io_busy_wait: 1, stderr_to_console: false}
+  # delay between exit_check when io is busy (in milliseconds)
+  @default_opts %{io_exit_check_delay: 1, stderr_to_console: false}
 
   def start_link(cmd, args, opts \\ %{}) do
     opts = Map.merge(@default_opts, opts)
@@ -107,7 +107,7 @@ defmodule Exile.Process do
     exec_args = Enum.map(state.cmd_args, &to_charlist/1)
     stderr_to_console = if state.opts.stderr_to_console, do: 1, else: 0
 
-    case ProcessNif.exec_proc([state.cmd | exec_args], stderr_to_console) do
+    case ProcessNif.execute([state.cmd | exec_args], stderr_to_console) do
       {:ok, context} ->
         start_watcher(context)
         {:noreply, %Process{state | context: context, status: :start}}
@@ -180,7 +180,7 @@ defmodule Exile.Process do
   def handle_info(msg, _state), do: raise(msg)
 
   defp do_write(%Process{pending_write: pending} = state) do
-    case ProcessNif.write_proc(state.context, pending.bin) do
+    case ProcessNif.sys_write(state.context, pending.bin) do
       {:ok, size} ->
         if size < byte_size(pending.bin) do
           binary = binary_part(pending.bin, size, byte_size(pending.bin) - size)
@@ -200,7 +200,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: %Pending{remaining: :unbuffered} = pending} = state) do
-    case ProcessNif.read_proc(state.context, -1) do
+    case ProcessNif.sys_read(state.context, -1) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, []})
         {:noreply, state}
@@ -219,7 +219,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: pending} = state) do
-    case ProcessNif.read_proc(state.context, pending.remaining) do
+    case ProcessNif.sys_read(state.context, pending.remaining) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, pending.bin})
         {:noreply, %Process{state | pending_read: %Pending{}}}
@@ -248,7 +248,7 @@ defmodule Exile.Process do
   end
 
   defp check_exit(state, from) do
-    case ProcessNif.wait_proc(state.context) do
+    case ProcessNif.sys_wait(state.context) do
       {:ok, {:exit, fork_exec_failure()}} ->
         GenServer.reply(from, {:error, :failed_to_execute})
         cancel_timer(state, from, :timeout)
@@ -261,7 +261,9 @@ defmodule Exile.Process do
 
       {:error, {0, _}} ->
         # Ideally we should not poll and we should handle this with SIGCHLD signal
-        tref = Elixir.Process.send_after(self(), {:check_exit, from}, state.opts.io_busy_wait)
+        tref =
+          Elixir.Process.send_after(self(), {:check_exit, from}, state.opts.io_exit_check_delay)
+
         {:noreply, put_timer(state, from, :check, tref)}
 
       {:error, {-1, status}} ->
@@ -271,12 +273,12 @@ defmodule Exile.Process do
     end
   end
 
-  defp do_kill(context, :sigkill), do: ProcessNif.kill_proc(context)
+  defp do_kill(context, :sigkill), do: ProcessNif.sys_kill(context)
 
-  defp do_kill(context, :sigterm), do: ProcessNif.terminate_proc(context)
+  defp do_kill(context, :sigterm), do: ProcessNif.sys_terminate(context)
 
   defp do_close(state, type) do
-    case ProcessNif.close_pipe(state.context, stream_type(type)) do
+    case ProcessNif.sys_close(state.context, stream_type(type)) do
       :ok ->
         {:reply, :ok, state}
 
@@ -322,7 +324,7 @@ defmodule Exile.Process do
   defp stream_type(:stdout), do: 1
 
   defp process_exit?(context) do
-    match?({:ok, _}, ProcessNif.wait_proc(context))
+    match?({:ok, _}, ProcessNif.sys_wait(context))
   end
 
   defp process_exit?(context, timeout) do
@@ -348,21 +350,19 @@ defmodule Exile.Process do
         try do
           Logger.debug(fn -> "Stopping external program" end)
 
-          # close_pipe is idempotent, calling it multiple times is okay
-          ProcessNif.close_pipe(context, stream_type(:stdin))
-          ProcessNif.close_pipe(context, stream_type(:stdout))
-
-          process_exit?(context) && throw(:done)
+          # sys_close is idempotent, calling it multiple times is okay
+          ProcessNif.sys_close(context, stream_type(:stdin))
+          ProcessNif.sys_close(context, stream_type(:stdout))
 
           # at max we wait for 100ms for program to exit
           process_exit?(context, 100) && throw(:done)
 
           Logger.debug("Failed to stop external program gracefully. attempting SIGTERM")
-          ProcessNif.terminate_proc(context)
+          ProcessNif.sys_terminate(context)
           process_exit?(context, 100) && throw(:done)
 
           Logger.debug("Failed to stop external program with SIGTERM. attempting SIGKILL")
-          ProcessNif.kill_proc(context)
+          ProcessNif.sys_kill(context)
           process_exit?(context, 1000) && throw(:done)
 
           Logger.error("[exile] failed to kill external process")

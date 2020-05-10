@@ -284,8 +284,8 @@ static StartProcessResult start_proccess(char *args[], bool stderr_to_console) {
 }
 
 /* TODO: return appropriate error instead returning generic "badarg" error */
-static ERL_NIF_TERM exec_proc(ErlNifEnv *env, int argc,
-                              const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
+                            const ERL_NIF_TERM argv[]) {
   char tmp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN + 1];
   char *exec_args[MAX_ARGUMENTS + 1];
   ErlNifTime start;
@@ -356,8 +356,8 @@ static int select_write(ErlNifEnv *env, ExecContext *ctx) {
   return retval;
 }
 
-static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
-                               const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
+                              const ERL_NIF_TERM argv[]) {
   if (argc != 2)
     enif_make_badarg(env);
 
@@ -397,8 +397,8 @@ static ERL_NIF_TERM write_proc(ErlNifEnv *env, int argc,
   }
 }
 
-static ERL_NIF_TERM close_pipe(ErlNifEnv *env, int argc,
-                               const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM sys_close(ErlNifEnv *env, int argc,
+                              const ERL_NIF_TERM argv[]) {
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
 
@@ -451,8 +451,8 @@ static int select_read(ErlNifEnv *env, ExecContext *ctx) {
   return retval;
 }
 
-static ERL_NIF_TERM read_proc(ErlNifEnv *env, int argc,
-                              const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
+                             const ERL_NIF_TERM argv[]) {
   if (argc != 2)
     enif_make_badarg(env);
 
@@ -527,8 +527,8 @@ static ERL_NIF_TERM is_alive(ErlNifEnv *env, int argc,
   }
 }
 
-static ERL_NIF_TERM terminate_proc(ErlNifEnv *env, int argc,
-                                   const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM sys_terminate(ErlNifEnv *env, int argc,
+                                  const ERL_NIF_TERM argv[]) {
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
   if (ctx->pid == CMD_EXIT)
@@ -537,8 +537,8 @@ static ERL_NIF_TERM terminate_proc(ErlNifEnv *env, int argc,
   return make_ok(env, enif_make_int(env, kill(ctx->pid, SIGTERM)));
 }
 
-static ERL_NIF_TERM kill_proc(ErlNifEnv *env, int argc,
-                              const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM sys_kill(ErlNifEnv *env, int argc,
+                             const ERL_NIF_TERM argv[]) {
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
   if (ctx->pid == CMD_EXIT)
@@ -565,8 +565,8 @@ static ERL_NIF_TERM make_exit_term(ErlNifEnv *env, ExecContext *ctx) {
   }
 }
 
-static ERL_NIF_TERM wait_proc(ErlNifEnv *env, int argc,
-                              const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM sys_wait(ErlNifEnv *env, int argc,
+                             const ERL_NIF_TERM argv[]) {
   ExecContext *ctx = NULL;
   GET_CTX(env, argv[0], ctx);
 
@@ -645,14 +645,14 @@ static void on_unload(ErlNifEnv *env, void *priv) {
 }
 
 static ErlNifFunc nif_funcs[] = {
-    {"exec_proc", 2, exec_proc, USE_DIRTY_IO},
-    {"write_proc", 2, write_proc, USE_DIRTY_IO},
-    {"read_proc", 2, read_proc, USE_DIRTY_IO},
-    {"close_pipe", 2, close_pipe, USE_DIRTY_IO},
-    {"terminate_proc", 1, terminate_proc, USE_DIRTY_IO},
-    {"wait_proc", 1, wait_proc, USE_DIRTY_IO},
-    {"kill_proc", 1, kill_proc, USE_DIRTY_IO},
-    {"is_alive", 1, is_alive, USE_DIRTY_IO},
+    {"execute", 2, execute, USE_DIRTY_IO},
+    {"sys_write", 2, sys_write, USE_DIRTY_IO},
+    {"sys_read", 2, sys_read, USE_DIRTY_IO},
+    {"sys_close", 2, sys_close, USE_DIRTY_IO},
+    {"sys_terminate", 1, sys_terminate, USE_DIRTY_IO},
+    {"sys_wait", 1, sys_wait, USE_DIRTY_IO},
+    {"sys_kill", 1, sys_kill, USE_DIRTY_IO},
+    {"alive?", 1, is_alive, USE_DIRTY_IO},
     {"os_pid", 1, os_pid, USE_DIRTY_IO},
 };
 
