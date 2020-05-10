@@ -113,15 +113,12 @@ defmodule Exile.ProcessTest do
     # we test backpressure by testing if `write` is delayed when we delay read
     {:ok, s} = Process.start_link("cat", [])
 
-    bin = generate_binary(65535)
-
-    # make buffer full
-    Process.write(s, bin)
+    large_bin = generate_binary(65535 * 5)
 
     writer =
       Task.async(fn ->
         Enum.each(1..10, fn i ->
-          Process.write(s, bin)
+          Process.write(s, large_bin)
           add_event(logger, {:write, i})
         end)
 
@@ -133,7 +130,7 @@ defmodule Exile.ProcessTest do
     reader =
       Task.async(fn ->
         Enum.each(1..10, fn i ->
-          Process.read(s, 65535)
+          Process.read(s, 5 * 65535)
           add_event(logger, {:read, i})
           # delay in reading should delay writes
           :timer.sleep(10)
