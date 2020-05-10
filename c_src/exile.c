@@ -57,6 +57,7 @@ static const int CMD_EXIT = -1;
 static const int MAX_ARGUMENTS = 20;
 static const int MAX_ARGUMENT_LEN = 1024;
 static const int UNBUFFERED_READ = -1;
+static const int PIPE_BUF_SIZE = 65535;
 
 /* We are choosing an exit code which is not reserved see:
  * https://www.tldp.org/LDP/abs/html/exitcodes.html. */
@@ -375,6 +376,10 @@ static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
   if (enif_inspect_binary(env, argv[1], &bin) != true)
     return enif_make_badarg(env);
 
+  if (bin.size == 0)
+    return enif_make_badarg(env);
+
+  /* should we limit the bin.size here? */
   ssize_t result = write(ctx->cmd_input_fd, bin.data, bin.size);
   int write_errono = errno;
 
@@ -473,11 +478,11 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
   size = request;
 
   if (request == UNBUFFERED_READ) {
-    size = 65535; // we try to read as much we can
+    size = PIPE_BUF_SIZE;
   } else if (request < 1) {
     enif_make_badarg(env);
-  } else if (request > 65535) {
-    size = 65535;
+  } else if (request > PIPE_BUF_SIZE) {
+    size = PIPE_BUF_SIZE;
   }
 
   unsigned char buf[size];
@@ -493,8 +498,9 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
 
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
-  if (result >= 0 ) {
-    // we do not 'select' if request completely satisfied OR EOF OR its UNBUFFERED_READ
+  if (result >= 0) {
+    /* we do not 'select' if request completely satisfied OR EOF OR its
+     * UNBUFFERED_READ */
     if (result == request || result == 0 || request == UNBUFFERED_READ) {
       return make_ok(env, bin_term);
     } else { // request partially satisfied

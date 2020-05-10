@@ -36,8 +36,8 @@ defmodule Exile.Process do
     GenServer.call(process, :close_stdin, :infinity)
   end
 
-  def write(process, binary) do
-    GenServer.call(process, {:write, binary}, :infinity)
+  def write(process, iodata) do
+    GenServer.call(process, {:write, IO.iodata_to_binary(iodata)}, :infinity)
   end
 
   def read(process, size) when is_integer(size) or size == :unbuffered do
@@ -178,6 +178,11 @@ defmodule Exile.Process do
   def handle_info({:select, _read_resource, _ref, :ready_input}, state), do: do_read(state)
 
   def handle_info(msg, _state), do: raise(msg)
+
+  defp do_write(%Process{pending_write: %Pending{bin: <<>>}} = state) do
+    GenServer.reply(state.pending_write.client_pid, :ok)
+    {:noreply, %{state | pending_write: %Pending{}}}
+  end
 
   defp do_write(%Process{pending_write: pending} = state) do
     case ProcessNif.sys_write(state.context, pending.bin) do
