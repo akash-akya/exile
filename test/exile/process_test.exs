@@ -94,7 +94,7 @@ defmodule Exile.ProcessTest do
     # we test backpressure by testing if `write` is delayed when we delay read
     {:ok, s} = Process.start_link("cat", [])
 
-    bin = Stream.repeatedly(fn -> "A" end) |> Enum.take(65535) |> IO.iodata_to_binary()
+    bin = generate_binary(65535)
 
     # make buffer full
     Process.write(s, bin)
@@ -257,5 +257,9 @@ defmodule Exile.ProcessTest do
       _ ->
         false
     end)
+  end
+
+  defp generate_binary(size) do
+    Stream.repeatedly(fn -> "A" end) |> Enum.take(size) |> IO.iodata_to_binary()
   end
 end

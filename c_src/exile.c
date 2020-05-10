@@ -374,26 +374,27 @@ static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
   if (enif_inspect_binary(env, argv[1], &bin) != true)
     return enif_make_badarg(env);
 
-  unsigned int result = write(ctx->cmd_input_fd, bin.data, bin.size);
+  ssize_t result = write(ctx->cmd_input_fd, bin.data, bin.size);
+  int write_errono = errno;
 
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
   /* TODO: branching is ugly, cleanup required */
-  if (result >= bin.size) { // request completely satisfied
+  if (result >= (ssize_t)bin.size) { // request completely satisfied
     return make_ok(env, enif_make_int(env, result));
   } else if (result >= 0) { // request partially satisfied
     int retval = select_write(env, ctx);
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_ok(env, enif_make_int(env, result));
-  } else if (errno == EAGAIN) { // busy
+  } else if (write_errono == EAGAIN) { // busy
     int retval = select_write(env, ctx);
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_error(env, ATOM_EAGAIN);
   } else { // Error
     perror("write()");
-    return make_error(env, enif_make_int(env, errno));
+    return make_error(env, enif_make_int(env, write_errono));
   }
 }
 
@@ -472,12 +473,15 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
   if (size == -1) {
     size = 65535;
     is_buffered = false;
-  } else if (size > 65535 || size < 1) {
+  } else if (size < 1) {
     enif_make_badarg(env);
+  } else if (size > 65535) {
+    size = 65535;
   }
 
   unsigned char buf[size];
-  int result = read(ctx->cmd_output_fd, buf, size);
+  ssize_t result = read(ctx->cmd_output_fd, buf, size);
+  int read_errno = errno;
 
   ERL_NIF_TERM bin_term = 0;
   if (result >= 0) {
@@ -499,14 +503,14 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
     return make_ok(env, bin_term);
   } else if (result == 0) { // EOF
     return make_ok(env, bin_term);
-  } else if (errno == EAGAIN) { // busy
+  } else if (read_errno == EAGAIN) { // busy
     int retval = select_read(env, ctx);
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_error(env, ATOM_EAGAIN);
   } else { // Error
     perror("read()");
-    return make_error(env, enif_make_int(env, errno));
+    return make_error(env, enif_make_int(env, read_errno));
   }
 }
 
