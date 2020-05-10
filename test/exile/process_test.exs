@@ -88,6 +88,68 @@ defmodule Exile.ProcessTest do
     assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
   end
 
+  test "back-pressure" do
+    logger = start_events_collector()
+
+    # we test backpressure by testing if `write` is delayed when we delay read
+    {:ok, s} = Process.start_link("cat", [])
+
+    bin = Stream.repeatedly(fn -> "A" end) |> Enum.take(65535) |> IO.iodata_to_binary()
+
+    # make buffer full
+    Process.write(s, bin)
+
+    writer =
+      Task.async(fn ->
+        Enum.each(1..10, fn i ->
+          Process.write(s, bin)
+          add_event(logger, {:write, i})
+        end)
+
+        Process.close_stdin(s)
+      end)
+
+    :timer.sleep(50)
+
+    reader =
+      Task.async(fn ->
+        Enum.each(1..10, fn i ->
+          Process.read(s, 65535)
+          add_event(logger, {:read, i})
+          # delay in reading should delay writes
+          :timer.sleep(10)
+        end)
+      end)
+
+    Task.await(writer)
+    Task.await(reader)
+
+    assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+
+    assert [
+             write: 1,
+             read: 1,
+             write: 2,
+             read: 2,
+             write: 3,
+             read: 3,
+             write: 4,
+             read: 4,
+             write: 5,
+             read: 5,
+             write: 6,
+             read: 6,
+             write: 7,
+             read: 7,
+             write: 8,
+             read: 8,
+             write: 9,
+             read: 9,
+             write: 10,
+             read: 10
+           ] == get_events(logger)
+  end
+
   # this test does not work properly in linux
   @tag :skip
   test "if we are leaking file descriptor" do
