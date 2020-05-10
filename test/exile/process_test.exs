@@ -88,6 +88,25 @@ defmodule Exile.ProcessTest do
     assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
   end
 
+  test "writing binary larger than pipe buffer size" do
+    large_bin = generate_binary(5 * 65535)
+    {:ok, s} = Process.start_link("cat", [])
+
+    writer =
+      Task.async(fn ->
+        Process.write(s, large_bin)
+        Process.close_stdin(s)
+      end)
+
+    :timer.sleep(100)
+
+    {_, iodata} = Process.read(s, 5 * 65535)
+    Task.await(writer)
+
+    assert IO.iodata_length(iodata) == 5 * 65535
+    assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+  end
+
   test "back-pressure" do
     logger = start_events_collector()
 

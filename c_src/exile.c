@@ -56,6 +56,7 @@ static const int PIPE_CLOSED = -1;
 static const int CMD_EXIT = -1;
 static const int MAX_ARGUMENTS = 20;
 static const int MAX_ARGUMENT_LEN = 1024;
+static const int UNBUFFERED_READ = -1;
 
 /* We are choosing an exit code which is not reserved see:
  * https://www.tldp.org/LDP/abs/html/exitcodes.html. */
@@ -466,16 +467,16 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
   if (ctx->cmd_output_fd == PIPE_CLOSED)
     return make_error(env, ATOM_PIPE_CLOSED);
 
-  bool is_buffered = true;
-  int size;
-  enif_get_int(env, argv[1], &size);
+  int size, request;
 
-  if (size == -1) {
-    size = 65535;
-    is_buffered = false;
-  } else if (size < 1) {
+  enif_get_int(env, argv[1], &request);
+  size = request;
+
+  if (request == UNBUFFERED_READ) {
+    size = 65535; // we try to read as much we can
+  } else if (request < 1) {
     enif_make_badarg(env);
-  } else if (size > 65535) {
+  } else if (request > 65535) {
     size = 65535;
   }
 
@@ -492,25 +493,26 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
 
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
-  /* TODO: branching is ugly, cleanup required */
-  if (result >= size ||
-      (is_buffered == false && result >= 0)) { // request completely satisfied
-    return make_ok(env, bin_term);
-  } else if (result > 0) { // request partially satisfied
-    int retval = select_read(env, ctx);
-    if (retval != 0)
-      return make_error(env, enif_make_int(env, retval));
-    return make_ok(env, bin_term);
-  } else if (result == 0) { // EOF
-    return make_ok(env, bin_term);
-  } else if (read_errno == EAGAIN) { // busy
-    int retval = select_read(env, ctx);
-    if (retval != 0)
-      return make_error(env, enif_make_int(env, retval));
-    return make_error(env, ATOM_EAGAIN);
-  } else { // Error
-    perror("read()");
-    return make_error(env, enif_make_int(env, read_errno));
+  if (result >= 0 ) {
+    // we do not 'select' if request completely satisfied OR EOF OR its UNBUFFERED_READ
+    if (result == request || result == 0 || request == UNBUFFERED_READ) {
+      return make_ok(env, bin_term);
+    } else { // request partially satisfied
+      int retval = select_read(env, ctx);
+      if (retval != 0)
+        return make_error(env, enif_make_int(env, retval));
+      return make_ok(env, bin_term);
+    }
+  } else {
+    if (read_errno == EAGAIN) { // busy
+      int retval = select_read(env, ctx);
+      if (retval != 0)
+        return make_error(env, enif_make_int(env, retval));
+      return make_error(env, ATOM_EAGAIN);
+    } else { // Error
+      perror("read()");
+      return make_error(env, enif_make_int(env, read_errno));
+    }
   }
 }
 
