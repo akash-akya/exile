@@ -24,7 +24,7 @@ File.stream!("music_video.mkv", [], 65535)
 
 `Exile.stream!` is a convenience wrapper around `Exile.Process`. If you want more control over stdin, stdout, and os process use `Exile.Process` directly.
 
-*Note: Exile is still work-in-progress, expect breaking changes. Exile is based on NIF, please know the implications before using it*
+**Note: Exile is experimental and it is still work-in-progress. Exile is based on NIF, please know the implications of it before using it**
 
 ## Rationale
 
