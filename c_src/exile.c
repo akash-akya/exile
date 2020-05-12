@@ -190,7 +190,7 @@ static void close_all_fds() {
     close(i);
 }
 
-static StartProcessResult start_proccess(char *args[], bool stderr_to_console) {
+static StartProcessResult start_process(char *args[], bool stderr_to_console) {
   StartProcessResult result = {.success = false};
   pid_t pid;
   int pipes[2][2] = {{0, 0}, {0, 0}};
@@ -321,7 +321,7 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
   stderr_to_console = tmp_int == 1 ? true : false;
 
   struct ExilePriv *data = enif_priv_data(env);
-  StartProcessResult result = start_proccess(exec_args, stderr_to_console);
+  StartProcessResult result = start_process(exec_args, stderr_to_console);
   ExecContext *ctx = NULL;
   ERL_NIF_TERM term;
 

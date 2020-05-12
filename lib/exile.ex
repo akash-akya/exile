@@ -4,41 +4,40 @@ defmodule Exile do
   """
 
   @doc """
-  Returns a `Exile.Stream` for the given `cmd` with arguments `args`.
+  Runs the given command with arguments and return an Enumerable to read command output.
 
-  The stream implements both `Enumerable` and `Collectable` protocols, which means it can be used both for reading from stdout and write to stdin of an OS process simultaneously (see examples).
-
-  `Exile.Stream` works with [iodata](https://hexdocs.pm/elixir/IO.html#module-io-data), chunks emitted by Enumerable is iodata as well. If you want binary please use (`IO.iodata_to_binary/1`)[https://hexdocs.pm/elixir/IO.html#iodata_to_binary/1].
+  First parameter must be a list containing command with arguments. example: `["cat", "file.txt"]`.
 
   ### Options
-    * `exit_timeout`     - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
-    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `nil` the output is unbuffered. Use `nil` this if want to receive that data as soon as its flused by the external program. Defaults to 65535
-  All other options are passed to `Exile.Process.start_link/3`
+    * `input`            - Input can be either an `Enumerable` or a function which accepts `Collectable`.
+                           1. input as Enumerable:
+                           ```elixir
+                           # List
+                           Exile.stream!(~w(bc -q), input: ["1+1\n", "2*2\n"]) |> Enum.to_list()
 
-  Since execution of external program is independent of beam process, once should prefer feeding input and getting output in separate processes.
+                           # Stream
+                           Exile.stream!(~w(cat), input: File.stream!("log.txt", [], 65536)) |> Enum.to_list()
+                           ```
+                           2. input as collectable:
+                           If the input in a function with arity 1, Exile will call that function with a `Collectable` as the argument. The function must *push* input to this collectable. Return value of the function is ignored.
+                           ```elixir
+                           Exile.stream!(~w(cat), input: fn sink -> Enum.into(1..100, sink, &to_string/1) end)
+                           |> Enum.to_list()
+                           ```
+                           By defaults no input will be given to the command
+    * `exit_timeout`     - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
+    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `nil` the output is unbuffered and chunk size will be variable. Defaults to 65535
+  All other options are passed to `Exile.Process.start_link/3`
 
   ### Examples
 
   ``` elixir
-  def audio_stream!(stream) do
-    # read from stdin and write to stdout
-    proc_stream = Exile.stream!("ffmpeg", ~w(-i - -f mp3 -))
-
-    Task.async(fn ->
-      Stream.into(stream, proc_stream)
-      |> Stream.run()
-    end)
-
-    proc_stream
-  end
-
-  File.stream!("music_video.mkv", [], 65535)
-  |> audio_stream!()
+  Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_video.mkv", [], 65535))
   |> Stream.into(File.stream!("music.mp3"))
   |> Stream.run()
   ```
   """
-  def stream!(cmd, args \\ [], opts \\ %{}) do
-    Exile.Stream.__build__(cmd, args, opts)
+  def stream!(cmd_with_args, opts \\ []) do
+    Exile.Stream.__build__(cmd_with_args, opts)
   end
 end

@@ -3,7 +3,7 @@ defmodule Exile.ProcessTest do
   alias Exile.Process
 
   test "read" do
-    {:ok, s} = Process.start_link("echo", ["test"])
+    {:ok, s} = Process.start_link(~w(echo test))
     assert {:eof, iodata} = Process.read(s, 100)
     assert IO.iodata_to_binary(iodata) == "test\n"
     assert :ok == Process.close_stdin(s)
@@ -11,7 +11,7 @@ defmodule Exile.ProcessTest do
   end
 
   test "write" do
-    {:ok, s} = Process.start_link("cat", [])
+    {:ok, s} = Process.start_link(~w(cat))
     assert :ok == Process.write(s, "hello")
     assert {:ok, iodata} = Process.read(s, 5)
     assert IO.iodata_to_binary(iodata) == "hello"
@@ -31,7 +31,7 @@ defmodule Exile.ProcessTest do
     # base64 produces output only after getting EOF from stdin.  we
     # collect events in order and assert that we can still read from
     # stdout even after closing stdin
-    {:ok, s} = Process.start_link("base64", [])
+    {:ok, s} = Process.start_link(~w(base64))
 
     # parallel reader should be blocked till we close stdin
     start_parallel_reader(s, logger)
@@ -57,7 +57,7 @@ defmodule Exile.ProcessTest do
   end
 
   test "external command termination on stop" do
-    {:ok, s} = Process.start_link("cat", [])
+    {:ok, s} = Process.start_link(~w(cat))
     {:ok, os_pid} = Process.os_pid(s)
     assert os_process_alive?(os_pid)
 
@@ -69,7 +69,7 @@ defmodule Exile.ProcessTest do
 
   test "external command kill on stop" do
     # cat command hangs waiting for EOF
-    {:ok, s} = Process.start_link(fixture("ignore_sigterm.sh"), [])
+    {:ok, s} = Process.start_link([fixture("ignore_sigterm.sh")])
 
     {:ok, os_pid} = Process.os_pid(s)
     assert os_process_alive?(os_pid)
@@ -84,13 +84,13 @@ defmodule Exile.ProcessTest do
   end
 
   test "exit status" do
-    {:ok, s} = Process.start_link("sh", ~w(-c "exit 2"))
+    {:ok, s} = Process.start_link(~w(sh -c "exit 2"))
     assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
   end
 
   test "writing binary larger than pipe buffer size" do
     large_bin = generate_binary(5 * 65535)
-    {:ok, s} = Process.start_link("cat", [])
+    {:ok, s} = Process.start_link(~w(cat))
 
     writer =
       Task.async(fn ->
@@ -111,7 +111,7 @@ defmodule Exile.ProcessTest do
     logger = start_events_collector()
 
     # we test backpressure by testing if `write` is delayed when we delay read
-    {:ok, s} = Process.start_link("cat", [])
+    {:ok, s} = Process.start_link(~w(cat))
 
     large_bin = generate_binary(65535 * 5)
 
@@ -169,7 +169,7 @@ defmodule Exile.ProcessTest do
   # this test does not work properly in linux
   @tag :skip
   test "if we are leaking file descriptor" do
-    {:ok, s} = Process.start_link("sleep", ["60"])
+    {:ok, s} = Process.start_link(~w(sleep 60))
     {:ok, os_pid} = Process.os_pid(s)
 
     # we are only printing FD, TYPE, NAME with respective prefix
@@ -182,7 +182,7 @@ defmodule Exile.ProcessTest do
   end
 
   test "process kill with pending write" do
-    {:ok, s} = Process.start_link("cat", [])
+    {:ok, s} = Process.start_link(~w(cat))
     {:ok, os_pid} = Process.os_pid(s)
 
     large_data =

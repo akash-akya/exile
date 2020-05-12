@@ -25,11 +25,11 @@ defmodule Exile.Process do
   defmacro fork_exec_failure(), do: 125
 
   # delay between exit_check when io is busy (in milliseconds)
-  @default_opts %{io_exit_check_delay: 1, stderr_to_console: false}
+  @default_opts [io_exit_check_delay: 1, stderr_to_console: false]
 
-  def start_link(cmd, args, opts \\ %{}) do
-    opts = Map.merge(@default_opts, opts)
-    GenServer.start(__MODULE__, %{cmd: cmd, args: args, opts: opts})
+  def start_link(cmd_with_args, opts \\ []) do
+    opts = Keyword.merge(@default_opts, opts)
+    GenServer.start(__MODULE__, %{cmd_with_args: cmd_with_args, opts: opts})
   end
 
   def close_stdin(process) do
@@ -69,8 +69,7 @@ defmodule Exile.Process do
   end
 
   defstruct [
-    :cmd,
-    :cmd_args,
+    :cmd_with_args,
     :opts,
     :errno,
     :context,
@@ -82,16 +81,16 @@ defmodule Exile.Process do
 
   alias __MODULE__
 
-  def init(%{cmd: cmd, args: args, opts: opts}) do
-    path = :os.find_executable(to_charlist(cmd))
+  def init(args) do
+    %{cmd_with_args: [cmd | args], opts: opts} = args
+    path = System.find_executable(cmd)
 
     unless path do
       raise "Command not found: #{cmd}"
     end
 
     state = %__MODULE__{
-      cmd: path,
-      cmd_args: args,
+      cmd_with_args: [path | args],
       opts: opts,
       errno: nil,
       status: :init,
@@ -104,16 +103,16 @@ defmodule Exile.Process do
   end
 
   def handle_continue(nil, state) do
-    exec_args = Enum.map(state.cmd_args, &to_charlist/1)
-    stderr_to_console = if state.opts.stderr_to_console, do: 1, else: 0
+    exec_args = Enum.map(state.cmd_with_args, &to_charlist/1)
+    stderr_to_console = if state.opts[:stderr_to_console], do: 1, else: 0
 
-    case ProcessNif.execute([state.cmd | exec_args], stderr_to_console) do
+    case ProcessNif.execute(exec_args, stderr_to_console) do
       {:ok, context} ->
         start_watcher(context)
         {:noreply, %Process{state | context: context, status: :start}}
 
       {:error, errno} ->
-        raise "Failed to start command: #{state.cmd}, errno: #{errno}"
+        raise "Failed to start command: #{state.cmd_with_args}, errno: #{errno}"
     end
   end
 
@@ -267,7 +266,7 @@ defmodule Exile.Process do
       {:error, {0, _}} ->
         # Ideally we should not poll and we should handle this with SIGCHLD signal
         tref =
-          Elixir.Process.send_after(self(), {:check_exit, from}, state.opts.io_exit_check_delay)
+          Elixir.Process.send_after(self(), {:check_exit, from}, state.opts[:io_exit_check_delay])
 
         {:noreply, put_timer(state, from, :check, tref)}
 
@@ -315,7 +314,7 @@ defmodule Exile.Process do
 
   defp get_timer(state, from, key), do: get_in(state.await, [from, key])
 
-  # Try to gracefully terminate external proccess if the genserver associated with the process is killed
+  # Try to gracefully terminate external process if the genserver associated with the process is killed
   defp start_watcher(context) do
     process_server = self()
     watcher_pid = spawn(fn -> watcher(process_server, context) end)

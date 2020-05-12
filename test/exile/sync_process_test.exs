@@ -8,7 +8,7 @@ defmodule Exile.SyncProcessTest do
     :timer.sleep(1000)
     before_exec = :erlang.memory(:total)
 
-    {:ok, s} = Process.start_link("cat", [])
+    {:ok, s} = Process.start_link(~w(cat))
 
     Enum.each(1..500, fn _ ->
       :ok = Process.write(s, @bin)
