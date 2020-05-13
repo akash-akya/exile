@@ -205,6 +205,18 @@ defmodule Exile.ProcessTest do
     assert {:normal, _} = Task.await(task)
   end
 
+  test "cd" do
+    parent = Path.expand("..", File.cwd!())
+    {:ok, s} = Process.start_link(~w(sh -c pwd), cd: parent)
+    {:ok, dir} = Process.read(s)
+    assert String.trim(dir) == parent
+    assert {:ok, {:exit, 0}} = Process.await_exit(s)
+  end
+
+  test "invalid path" do
+    assert {:error, _} = Process.start_link(~w(sh -c pwd), cd: "invalid")
+  end
+
   def start_parallel_reader(proc_server, logger) do
     spawn_link(fn -> reader_loop(proc_server, logger) end)
   end

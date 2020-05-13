@@ -190,7 +190,8 @@ static void close_all_fds() {
     close(i);
 }
 
-static StartProcessResult start_process(char *args[], bool stderr_to_console) {
+static StartProcessResult start_process(char *args[], bool stderr_to_console,
+                                        const char dir[1024]) {
   StartProcessResult result = {.success = false};
   pid_t pid;
   int pipes[2][2] = {{0, 0}, {0, 0}};
@@ -226,6 +227,11 @@ static StartProcessResult start_process(char *args[], bool stderr_to_console) {
     return result;
 
   case 0: // child
+
+    if (dir[0] && chdir(dir) != 0) {
+      perror("[exile] failed to change directory");
+      _exit(FORK_EXEC_FAILURE);
+    }
 
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
@@ -290,6 +296,7 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
                             const ERL_NIF_TERM argv[]) {
   char tmp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN + 1];
   char *exec_args[MAX_ARGUMENTS + 1];
+  char dir[1024] = {'\0'};
   ErlNifTime start;
   unsigned int args_len;
 
@@ -320,8 +327,12 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
     return enif_make_badarg(env);
   stderr_to_console = tmp_int == 1 ? true : false;
 
+  if (enif_get_string(env, argv[2], dir, 1024, ERL_NIF_LATIN1) < 0) {
+    return enif_make_badarg(env);
+  }
+
   struct ExilePriv *data = enif_priv_data(env);
-  StartProcessResult result = start_process(exec_args, stderr_to_console);
+  StartProcessResult result = start_process(exec_args, stderr_to_console, dir);
   ExecContext *ctx = NULL;
   ERL_NIF_TERM term;
 
@@ -657,7 +668,7 @@ static void on_unload(ErlNifEnv *env, void *priv) {
 }
 
 static ErlNifFunc nif_funcs[] = {
-    {"execute", 2, execute, USE_DIRTY_IO},
+    {"execute", 3, execute, USE_DIRTY_IO},
     {"sys_write", 2, sys_write, USE_DIRTY_IO},
     {"sys_read", 2, sys_read, USE_DIRTY_IO},
     {"sys_close", 2, sys_close, USE_DIRTY_IO},

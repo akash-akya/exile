@@ -89,6 +89,12 @@ defmodule Exile.Process do
       raise "Command not found: #{cmd}"
     end
 
+    if opts[:cd] do
+      if !File.exists?(opts[:cd]) || !File.dir?(opts[:cd]) do
+        raise ":dir is not a valid path"
+      end
+    end
+
     state = %__MODULE__{
       cmd_with_args: [path | args],
       opts: opts,
@@ -105,8 +111,9 @@ defmodule Exile.Process do
   def handle_continue(nil, state) do
     exec_args = Enum.map(state.cmd_with_args, &to_charlist/1)
     stderr_to_console = if state.opts[:stderr_to_console], do: 1, else: 0
+    cd = to_charlist(state.opts[:cd] || "")
 
-    case ProcessNif.execute(exec_args, stderr_to_console) do
+    case ProcessNif.execute(exec_args, stderr_to_console, cd) do
       {:ok, context} ->
         start_watcher(context)
         {:noreply, %Process{state | context: context, status: :start}}
