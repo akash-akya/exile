@@ -54,8 +54,9 @@ static const int PIPE_READ = 0;
 static const int PIPE_WRITE = 1;
 static const int PIPE_CLOSED = -1;
 static const int CMD_EXIT = -1;
-static const int MAX_ARGUMENTS = 20;
+static const int MAX_ARGUMENTS = 50;
 static const int MAX_ARGUMENT_LEN = 1024;
+static const int MAX_ENV_LEN = 1024;
 static const int UNBUFFERED_READ = -1;
 static const int PIPE_BUF_SIZE = 65535;
 
@@ -190,8 +191,10 @@ static void close_all_fds() {
     close(i);
 }
 
-static StartProcessResult start_process(char *args[], bool stderr_to_console,
-                                        const char dir[1024]) {
+static StartProcessResult start_process(char *const args[],
+                                        bool stderr_to_console,
+                                        const char dir[],
+                                        char *const exec_env[]) {
   StartProcessResult result = {.success = false};
   pid_t pid;
   int pipes[2][2] = {{0, 0}, {0, 0}};
@@ -272,7 +275,7 @@ static StartProcessResult start_process(char *args[], bool stderr_to_console,
 
     close_all_fds();
 
-    execvp(args[0], args);
+    execve(args[0], args, exec_env);
     perror("[exile] execvp(): failed");
 
     _exit(FORK_EXEC_FAILURE);
@@ -294,36 +297,68 @@ static StartProcessResult start_process(char *args[], bool stderr_to_console,
 /* TODO: return appropriate error instead returning generic "badarg" error */
 static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
                             const ERL_NIF_TERM argv[]) {
-  char tmp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN + 1];
-  char *exec_args[MAX_ARGUMENTS + 1];
   char dir[1024] = {'\0'};
   ErlNifTime start;
-  unsigned int args_len;
+  unsigned int args_len, env_len;
+  ERL_NIF_TERM head, tail, list;
 
   start = enif_monotonic_time(ERL_NIF_USEC);
 
-  if (enif_get_list_length(env, argv[0], &args_len) != true)
+  if (enif_get_list_length(env, argv[0], &args_len) != true) {
+    error("invalid command with arguments param");
     return enif_make_badarg(env);
+  }
 
-  if (args_len > MAX_ARGUMENTS)
+  if (args_len > MAX_ARGUMENTS) {
+    error("command argument size exceeds limit: %d", MAX_ARGUMENTS);
     return enif_make_badarg(env);
+  }
 
-  ERL_NIF_TERM head, tail, list = argv[0];
+  char _args_temp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN + 1];
+  char *exec_args[MAX_ARGUMENTS + 1];
+
+  list = argv[0];
   for (unsigned int i = 0; i < args_len; i++) {
     if (enif_get_list_cell(env, list, &head, &tail) != true)
       return enif_make_badarg(env);
 
-    if (enif_get_string(env, head, tmp[i], MAX_ARGUMENT_LEN, ERL_NIF_LATIN1) <
-        1)
+    if (enif_get_string(env, head, _args_temp[i], MAX_ARGUMENT_LEN,
+                        ERL_NIF_LATIN1) < 1)
       return enif_make_badarg(env);
-    exec_args[i] = tmp[i];
+    exec_args[i] = _args_temp[i];
     list = tail;
   }
   exec_args[args_len] = NULL;
 
+  if (enif_get_list_length(env, argv[1], &env_len) != true) {
+    error("invalid env param");
+    return enif_make_badarg(env);
+  }
+
+  if (args_len > MAX_ARGUMENTS) {
+    error("env size exceeds limit: %d", MAX_ARGUMENTS);
+    return enif_make_badarg(env);
+  }
+
+  char _env_temp[env_len][MAX_ENV_LEN];
+  char *exec_env[env_len + 1];
+
+  list = argv[1];
+  for (unsigned int i = 0; i < env_len; i++) {
+    if (enif_get_list_cell(env, list, &head, &tail) != true)
+      return enif_make_badarg(env);
+
+    if (enif_get_string(env, head, _env_temp[i], MAX_ENV_LEN, ERL_NIF_LATIN1) <
+        1)
+      return enif_make_badarg(env);
+    exec_env[i] = _env_temp[i];
+    list = tail;
+  }
+  exec_env[env_len] = NULL;
+
   bool stderr_to_console = true;
   int tmp_int;
-  if (enif_get_int(env, argv[1], &tmp_int) != true)
+  if (enif_get_int(env, argv[3], &tmp_int) != true)
     return enif_make_badarg(env);
   stderr_to_console = tmp_int == 1 ? true : false;
 
@@ -332,7 +367,8 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
   }
 
   struct ExilePriv *data = enif_priv_data(env);
-  StartProcessResult result = start_process(exec_args, stderr_to_console, dir);
+  StartProcessResult result =
+      start_process(exec_args, stderr_to_console, dir, exec_env);
   ExecContext *ctx = NULL;
   ERL_NIF_TERM term;
 
@@ -668,7 +704,7 @@ static void on_unload(ErlNifEnv *env, void *priv) {
 }
 
 static ErlNifFunc nif_funcs[] = {
-    {"execute", 3, execute, USE_DIRTY_IO},
+    {"execute", 4, execute, USE_DIRTY_IO},
     {"sys_write", 2, sys_write, USE_DIRTY_IO},
     {"sys_read", 2, sys_read, USE_DIRTY_IO},
     {"sys_close", 2, sys_close, USE_DIRTY_IO},

@@ -70,8 +70,4 @@ Non-blocking io can be used for other interesting things. Such as reading named 
 
 As with any NIF based solution, bugs or issues in Exile implementation **can bring down the beam VM**. But NIF implementation is comparatively small and mostly uses POSIX system calls, spawned external processes are still completely isolated at OS level and the port issues it tries to solve are critical.
 
-
-### Usage
 If all you want is to run a command with no communication, then just sticking with `System.cmd` is a better option.
-
-For most of the use-cases using `Exile.stream!` abstraction should be enough. Use `Exile.Process` only if you need more control over the life-cycle of IO streams and OS process.

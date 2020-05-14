@@ -8,7 +8,8 @@ defmodule Exile.ProcessNif do
     :erlang.load_nif(nif_path, 0)
   end
 
-  def execute(_cmd, _stderr_to_console, _dir), do: :erlang.nif_error(:nif_library_not_loaded)
+  def execute(_cmd, _dir, _env, _stderr_to_console),
+    do: :erlang.nif_error(:nif_library_not_loaded)
 
   def sys_write(_context, _bin), do: :erlang.nif_error(:nif_library_not_loaded)
 

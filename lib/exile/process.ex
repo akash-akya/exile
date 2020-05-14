@@ -25,7 +25,9 @@ defmodule Exile.Process do
   defmacro fork_exec_failure(), do: 125
 
   # delay between exit_check when io is busy (in milliseconds)
-  @default_opts [io_exit_check_delay: 1, stderr_to_console: false]
+  @exit_check_timeout 5
+
+  @default_opts [stderr_to_console: false, env: []]
 
   def start_link(cmd_with_args, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
@@ -112,8 +114,9 @@ defmodule Exile.Process do
     exec_args = Enum.map(state.cmd_with_args, &to_charlist/1)
     stderr_to_console = if state.opts[:stderr_to_console], do: 1, else: 0
     cd = to_charlist(state.opts[:cd] || "")
+    env = normalize_env(state.opts[:env] || %{})
 
-    case ProcessNif.execute(exec_args, stderr_to_console, cd) do
+    case ProcessNif.execute(exec_args, env, cd, stderr_to_console) do
       {:ok, context} ->
         start_watcher(context)
         {:noreply, %Process{state | context: context, status: :start}}
@@ -272,8 +275,7 @@ defmodule Exile.Process do
 
       {:error, {0, _}} ->
         # Ideally we should not poll and we should handle this with SIGCHLD signal
-        tref =
-          Elixir.Process.send_after(self(), {:check_exit, from}, state.opts[:io_exit_check_delay])
+        tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
 
         {:noreply, put_timer(state, from, :check, tref)}
 
@@ -345,6 +347,13 @@ defmodule Exile.Process do
       :timer.sleep(timeout)
       process_exit?(context)
     end
+  end
+
+  defp normalize_env(env) do
+    Enum.map(env, fn {key, value} ->
+      (String.trim(key) <> "=" <> String.trim(value))
+      |> to_charlist()
+    end)
   end
 
   # for proper process exit parent of the child *must* wait() for

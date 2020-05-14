@@ -217,6 +217,13 @@ defmodule Exile.ProcessTest do
     assert {:error, _} = Process.start_link(~w(sh -c pwd), cd: "invalid")
   end
 
+  test "env" do
+    assert {:ok, s} = Process.start_link([fixture("env.sh")], env: %{"TEST_ENV" => "test"})
+
+    assert {:ok, "test"} = Process.read(s)
+    assert {:ok, {:exit, 0}} = Process.await_exit(s)
+  end
+
   def start_parallel_reader(proc_server, logger) do
     spawn_link(fn -> reader_loop(proc_server, logger) end)
   end
