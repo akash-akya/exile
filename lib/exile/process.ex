@@ -276,7 +276,6 @@ defmodule Exile.Process do
       {:error, {0, _}} ->
         # Ideally we should not poll and we should handle this with SIGCHLD signal
         tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
-
         {:noreply, put_timer(state, from, :check, tref)}
 
       {:error, {-1, status}} ->

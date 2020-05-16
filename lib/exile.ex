@@ -25,7 +25,6 @@ defmodule Exile do
                            |> Enum.to_list()
                            ```
                            By defaults no input will be given to the command
-    * `cd`               - The directory to run the command in
     * `exit_timeout`     - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
     * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `nil` the output is unbuffered and chunk size will be variable. Defaults to 65535
   All other options are passed to `Exile.Process.start_link/3`

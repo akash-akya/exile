@@ -428,7 +428,7 @@ static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
 
   /* should we limit the bin.size here? */
   ssize_t result = write(ctx->cmd_input_fd, bin.data, bin.size);
-  int write_errono = errno;
+  int write_errno = errno;
 
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
@@ -440,14 +440,14 @@ static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_ok(env, enif_make_int(env, result));
-  } else if (write_errono == EAGAIN) { // busy
+  } else if (write_errno == EAGAIN || write_errno == EWOULDBLOCK) { // busy
     int retval = select_write(env, ctx);
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_error(env, ATOM_EAGAIN);
   } else { // Error
     perror("write()");
-    return make_error(env, enif_make_int(env, write_errono));
+    return make_error(env, enif_make_int(env, write_errno));
   }
 }
 
@@ -557,7 +557,7 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
       return make_ok(env, bin_term);
     }
   } else {
-    if (read_errno == EAGAIN) { // busy
+    if (read_errno == EAGAIN || read_errno == EWOULDBLOCK) { // busy
       int retval = select_read(env, ctx);
       if (retval != 0)
         return make_error(env, enif_make_int(env, retval));
