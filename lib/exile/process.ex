@@ -13,9 +13,6 @@ defmodule Exile.Process do
     * does not create zombie process. It always tries to cleanup resources
 
   At high level it makes non-blocking asynchronous system calls to execute and interact with the external program. It completely bypasses beam implementation for the same using NIF. It uses `select()` system call for asynchronous IO. Most of the system calls are non-blocking, so it does not has adverse effect on scheduler. Issues such as "scheduler collapse".
-
-  ### Obligatory NIF warning
-  As with any NIF based solution, bugs or issues in Exile implementation can bring down the beam VM. But NIF implementation is comparatively small and mostly uses POSIX system calls, spawned external processes are still completely isolated at OS level and the port issues it tries to solve are critical.
   """
 
   alias Exile.ProcessNif
@@ -29,6 +26,18 @@ defmodule Exile.Process do
 
   @default_opts [stderr_to_console: false, env: []]
 
+  @doc """
+  Starts `Exile.ProcessServer`
+
+  Starts external program using `cmd_with_args` with options `opts`
+
+  `cmd_with_args` must be a list containing command with arguments. example: `["cat", "file.txt"]`.
+
+  ### Options
+    * `cd`                -  the directory to run the command in
+    * `env`               -  an enumerable of tuples containing environment key-value. These can be accessed in the external program
+    * `stderr_to_console` -  whether to print stderr output to console. Defaults to `false`
+  """
   def start_link(cmd_with_args, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
     GenServer.start(__MODULE__, %{cmd_with_args: cmd_with_args, opts: opts})
