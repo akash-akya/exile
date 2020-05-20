@@ -127,7 +127,7 @@ defmodule Exile.Process do
 
     case ProcessNif.execute(exec_args, env, cd, stderr_to_console) do
       {:ok, context} ->
-        start_watcher(context)
+        {:ok, _} = Exile.Watcher.watch(self(), context)
         {:noreply, %Process{state | context: context, status: :start}}
 
       {:error, errno} ->
@@ -331,73 +331,13 @@ defmodule Exile.Process do
 
   defp get_timer(state, from, key), do: get_in(state.await, [from, key])
 
-  # Try to gracefully terminate external process if the genserver associated with the process is killed
-  defp start_watcher(context) do
-    process_server = self()
-    watcher_pid = spawn(fn -> watcher(process_server, context) end)
-
-    receive do
-      {^watcher_pid, :done} -> :ok
-    end
-  end
-
   defp stream_type(:stdin), do: 0
   defp stream_type(:stdout), do: 1
-
-  defp process_exit?(context) do
-    match?({:ok, _}, ProcessNif.sys_wait(context))
-  end
-
-  defp process_exit?(context, timeout) do
-    if process_exit?(context) do
-      true
-    else
-      :timer.sleep(timeout)
-      process_exit?(context)
-    end
-  end
 
   defp normalize_env(env) do
     Enum.map(env, fn {key, value} ->
       (String.trim(key) <> "=" <> String.trim(value))
       |> to_charlist()
     end)
-  end
-
-  # for proper process exit parent of the child *must* wait() for
-  # child processes termination exit and "pickup" after the exit
-  # (receive child exit_status). Resources acquired by child such as
-  # file descriptors won't be released even if the child process
-  # itself is terminated.
-  defp watcher(process_server, context) do
-    ref = Elixir.Process.monitor(process_server)
-    send(process_server, {self(), :done})
-
-    receive do
-      {:DOWN, ^ref, :process, ^process_server, _reason} ->
-        try do
-          Logger.debug(fn -> "Stopping external program" end)
-
-          # sys_close is idempotent, calling it multiple times is okay
-          ProcessNif.sys_close(context, stream_type(:stdin))
-          ProcessNif.sys_close(context, stream_type(:stdout))
-
-          # at max we wait for 100ms for program to exit
-          process_exit?(context, 100) && throw(:done)
-
-          Logger.debug("Failed to stop external program gracefully. attempting SIGTERM")
-          ProcessNif.sys_terminate(context)
-          process_exit?(context, 100) && throw(:done)
-
-          Logger.debug("Failed to stop external program with SIGTERM. attempting SIGKILL")
-          ProcessNif.sys_kill(context)
-          process_exit?(context, 1000) && throw(:done)
-
-          Logger.error("[exile] failed to kill external process")
-          raise "Failed to kill external process"
-        catch
-          :done -> Logger.debug(fn -> "External program exited successfully" end)
-        end
-    end
   end
 end

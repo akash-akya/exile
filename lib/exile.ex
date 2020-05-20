@@ -3,6 +3,20 @@ defmodule Exile do
   Exile is an alternative for beam ports with back-pressure and non-blocking IO
   """
 
+  use Application
+
+  @doc false
+  def start(_type, _args) do
+    opts = [
+      name: Exile.WatcherSupervisor,
+      strategy: :one_for_one
+    ]
+
+    # we use DynamicSupervisor for cleaning up external processes on
+    # :init.stop or SIGTERM
+    DynamicSupervisor.start_link(opts)
+  end
+
   @doc """
   Runs the given command with arguments and return an Enumerable to read command output.
 
