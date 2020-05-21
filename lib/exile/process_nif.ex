@@ -1,6 +1,5 @@
 defmodule Exile.ProcessNif do
   @moduledoc false
-
   @on_load :load_nifs
 
   def load_nifs do
