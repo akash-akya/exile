@@ -53,7 +53,7 @@ defmodule Exile.Process do
     GenServer.call(process, {:write, IO.iodata_to_binary(iodata)}, :infinity)
   end
 
-  def read(process, size) when is_integer(size) or size == :unbuffered do
+  def read(process, size) when (is_integer(size) and size > 0) or size == :unbuffered do
     GenServer.call(process, {:read, size}, :infinity)
   end
 
@@ -369,9 +369,20 @@ defmodule Exile.Process do
     if term, do: {:ok, ProcessNif.nif_true()}, else: {:ok, ProcessNif.nif_false()}
   end
 
+  defp validate_opts_fields(opts) do
+    {_, additional_opts} = Keyword.split(opts, [:cd, :stderr_to_console, :env])
+
+    if Enum.empty?(additional_opts) do
+      :ok
+    else
+      {:error, "invalid opts: #{inspect(additional_opts)}"}
+    end
+  end
+
   defp normalize_args([cmd | args], opts) when is_list(opts) do
     with {:ok, cmd} <- normalize_cmd(cmd),
          {:ok, args} <- normalize_cmd_args(args),
+         :ok <- validate_opts_fields(opts),
          {:ok, cd} <- normalize_cd(opts[:cd]),
          {:ok, stderr_to_console} <- normalize_stderr_to_console(opts[:stderr_to_console]),
          {:ok, env} <- normalize_env(opts[:env]) do

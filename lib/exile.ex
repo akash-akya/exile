@@ -40,7 +40,7 @@ defmodule Exile do
                            ```
                            By defaults no input will be given to the command
     * `exit_timeout`     - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
-    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `nil` the output is unbuffered and chunk size will be variable. Defaults to 65535
+    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `:unbuffered` the output is unbuffered and chunk size will be variable depending on the amount of data availble at that time. Defaults to 65535
   All other options are passed to `Exile.Process.start_link/3`
 
   ### Examples

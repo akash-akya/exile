@@ -224,6 +224,11 @@ defmodule Exile.ProcessTest do
     assert {:error, _} = Process.start_link(~w(sh -c pwd), cd: "invalid")
   end
 
+  test "invalid opt" do
+    assert {:error, "invalid opts: [invalid: :test]"} =
+             Process.start_link(~w(cat), invalid: :test)
+  end
+
   test "env" do
     assert {:ok, s} = Process.start_link(~w(printenv TEST_ENV), env: %{"TEST_ENV" => "test"})
 
