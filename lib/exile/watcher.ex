@@ -45,8 +45,8 @@ defmodule Exile.Watcher do
       Logger.debug(fn -> "Stopping external program" end)
 
       # sys_close is idempotent, calling it multiple times is okay
-      ProcessNif.sys_close(context, stream_type(:stdin))
-      ProcessNif.sys_close(context, stream_type(:stdout))
+      ProcessNif.sys_close(context, ProcessNif.to_process_fd(:stdin))
+      ProcessNif.sys_close(context, ProcessNif.to_process_fd(:stdout))
 
       # at max we wait for 100ms for program to exit
       process_exit?(context, 100) && throw(:done)
@@ -78,7 +78,4 @@ defmodule Exile.Watcher do
       process_exit?(context)
     end
   end
-
-  defp stream_type(:stdin), do: 0
-  defp stream_type(:stdout), do: 1
 end
