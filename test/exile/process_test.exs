@@ -47,7 +47,7 @@ defmodule Exile.ProcessTest do
 
     assert :ok == Process.close_stdin(s)
     add_event(logger, :input_close)
-    assert {:ok, {:exit, 0}} == Process.await_exit(s, 50)
+    assert {:ok, {:exit, 0}} == Process.await_exit(s, 100)
     Process.stop(s)
 
     assert [
