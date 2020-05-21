@@ -335,9 +335,16 @@ defmodule Exile.Process do
   defp stream_type(:stdout), do: 1
 
   defp normalize_env(env) do
-    Enum.map(env, fn {key, value} ->
-      (String.trim(key) <> "=" <> String.trim(value))
-      |> to_charlist()
+    user_env =
+      Map.new(env, fn {key, value} ->
+        {String.trim(key), String.trim(value)}
+      end)
+
+    # spawned process env will be beam env at that time + user env.
+    # this is similar to erlang behavior
+    Map.merge(System.get_env(), user_env)
+    |> Enum.map(fn {k, v} ->
+      to_charlist(k <> "=" <> v)
     end)
   end
 end

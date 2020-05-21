@@ -225,10 +225,31 @@ defmodule Exile.ProcessTest do
   end
 
   test "env" do
-    assert {:ok, s} = Process.start_link([fixture("env.sh")], env: %{"TEST_ENV" => "test"})
+    assert {:ok, s} = Process.start_link(~w(printenv TEST_ENV), env: %{"TEST_ENV" => "test"})
 
-    assert {:ok, "test"} = Process.read(s)
+    assert {:ok, "test\n"} = Process.read(s)
     assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
+  end
+
+  test "if external process inherits beam env" do
+    :ok = System.put_env([{"BEAM_ENV_A", "10"}])
+    assert {:ok, s} = Process.start_link(~w(printenv BEAM_ENV_A))
+
+    assert {:ok, "10\n"} = Process.read(s)
+    assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
+  end
+
+  test "if user env overrides beam env" do
+    :ok = System.put_env([{"BEAM_ENV", "base"}])
+
+    assert {:ok, s} =
+             Process.start_link(~w(printenv BEAM_ENV), env: %{"BEAM_ENV" => "overridden"})
+
+    assert {:ok, "overridden\n"} = Process.read(s)
+    assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
   end
 
   def start_parallel_reader(proc_server, logger) do
