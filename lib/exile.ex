@@ -3,6 +3,20 @@ defmodule Exile do
   Exile is an alternative for beam ports with back-pressure and non-blocking IO
   """
 
+  use Application
+
+  @doc false
+  def start(_type, _args) do
+    opts = [
+      name: Exile.WatcherSupervisor,
+      strategy: :one_for_one
+    ]
+
+    # we use DynamicSupervisor for cleaning up external processes on
+    # :init.stop or SIGTERM
+    DynamicSupervisor.start_link(opts)
+  end
+
   @doc """
   Runs the given command with arguments and return an Enumerable to read command output.
 
@@ -26,7 +40,7 @@ defmodule Exile do
                            ```
                            By defaults no input will be given to the command
     * `exit_timeout`     - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
-    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `nil` the output is unbuffered and chunk size will be variable. Defaults to 65535
+    * `chunk_size`       - Size of each iodata chunk emitted by Enumerable stream. When set to `:unbuffered` the output is unbuffered and chunk size will be variable depending on the amount of data availble at that time. Defaults to 65535
   All other options are passed to `Exile.Process.start_link/3`
 
   ### Examples

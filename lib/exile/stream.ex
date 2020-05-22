@@ -1,6 +1,6 @@
 defmodule Exile.Stream do
   @moduledoc """
-   Defines a `Exile.Stream` struct returned by `Exile.stream!/3`.
+  Defines a `Exile.Stream` struct returned by `Exile.stream!/3`.
   """
 
   alias Exile.Process
@@ -29,41 +29,36 @@ defmodule Exile.Stream do
 
   defstruct [:process, :stream_opts]
 
-  @default_opts [exit_timeout: :infinity, chunk_size: 65535]
-
   @type t :: %__MODULE__{}
 
   @doc false
   def __build__(cmd_with_args, opts) do
     {stream_opts, process_opts} = Keyword.split(opts, [:exit_timeout, :chunk_size, :input])
-    stream_opts = Keyword.merge(@default_opts, stream_opts)
 
-    {:ok, process} = Process.start_link(cmd_with_args, process_opts)
-
-    start_input_streamer(%Sink{process: process}, stream_opts[:input])
-
-    %Exile.Stream{process: process, stream_opts: stream_opts}
+    with {:ok, stream_opts} <- normalize_stream_opts(stream_opts) do
+      {:ok, process} = Process.start_link(cmd_with_args, process_opts)
+      start_input_streamer(%Sink{process: process}, stream_opts.input)
+      %Exile.Stream{process: process, stream_opts: stream_opts}
+    else
+      {:error, error} -> raise ArgumentError, message: error
+    end
   end
 
   @doc false
   defp start_input_streamer(sink, input) do
-    cond do
-      is_nil(input) ->
+    case input do
+      :no_input ->
         :ok
 
-      !is_function(input) && Enumerable.impl_for(input) ->
+      {:enumerable, enum} ->
         spawn_link(fn ->
-          Enum.into(input, sink)
+          Enum.into(enum, sink)
         end)
 
-      is_function(input, 1) ->
+      {:collectable, func} ->
         spawn_link(fn ->
-          input.(sink)
+          func.(sink)
         end)
-
-      true ->
-        raise ArgumentError,
-          message: ":input must be either Enumerable or a function with arity 1"
     end
   end
 
@@ -72,7 +67,7 @@ defmodule Exile.Stream do
       start_fun = fn -> :ok end
 
       next_fun = fn :ok ->
-        case Process.read(process, stream_opts[:chunk_size]) do
+        case Process.read(process, stream_opts.chunk_size) do
           {:eof, []} ->
             {:halt, :normal}
 
@@ -92,7 +87,7 @@ defmodule Exile.Stream do
         try do
           # always close stdin before stoping to give the command chance to exit properly
           Process.close_stdin(process)
-          result = Process.await_exit(process, stream_opts[:exit_timeout])
+          result = Process.await_exit(process, stream_opts.exit_timeout)
 
           case {exit_type, result} do
             {_, :timeout} ->
@@ -105,9 +100,12 @@ defmodule Exile.Stream do
             {:normal, {:ok, error}} ->
               raise "command exited with status: #{inspect(error)}"
 
-            {_, error} ->
+            {exit_type, error} ->
               Process.kill(process, :sigkill)
-              raise "command exited with error: #{inspect(error)}"
+
+              raise "command exited with exit_type: #{inspect(exit_type)}, error: #{
+                      inspect(error)
+                    }"
           end
         after
           Process.stop(process)
@@ -129,4 +127,47 @@ defmodule Exile.Stream do
       {:error, __MODULE__}
     end
   end
+
+  defp normalize_input(term) do
+    cond do
+      is_nil(term) ->
+        {:ok, :no_input}
+
+      !is_function(term) && Enumerable.impl_for(term) ->
+        {:ok, {:enumerable, term}}
+
+      is_function(term, 1) ->
+        {:ok, {:collectable, term}}
+
+      true ->
+        {:error, "`:input` must be either Enumerable or a function which accepts collectable"}
+    end
+  end
+
+  defp normalize_chunk_size(nil), do: {:ok, 65536}
+  defp normalize_chunk_size(:no_buffering), do: {:ok, :no_buffering}
+
+  defp normalize_chunk_size(chunk_size) do
+    if is_integer(chunk_size) and chunk_size > 0,
+      do: {:ok, chunk_size},
+      else: {:error, ":exit_timeout must be either :infinity or a positive integer"}
+  end
+
+  defp normalize_exit_timeout(term) when term in [nil, :infinity], do: {:ok, :infinity}
+
+  defp normalize_exit_timeout(term) do
+    if is_integer(term),
+      do: {:ok, term},
+      else: {:error, ":exit_timeout must be either :infinity or an integer"}
+  end
+
+  defp normalize_stream_opts(opts) when is_list(opts) do
+    with {:ok, input} <- normalize_input(opts[:input]),
+         {:ok, exit_timeout} <- normalize_exit_timeout(opts[:exit_timeout]),
+         {:ok, chunk_size} <- normalize_chunk_size(opts[:chunk_size]) do
+      {:ok, %{input: input, exit_timeout: exit_timeout, chunk_size: chunk_size}}
+    end
+  end
+
+  defp normalize_stream_opts(_), do: {:error, "stream_opts must be a keyword list"}
 end

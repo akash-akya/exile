@@ -56,7 +56,7 @@ static const int PIPE_CLOSED = -1;
 static const int CMD_EXIT = -1;
 static const int MAX_ARGUMENTS = 50;
 static const int MAX_ARGUMENT_LEN = 1024;
-static const int MAX_ENV_LEN = 1024;
+static const int MAX_ENV_VAR_LEN = 1024;
 static const int UNBUFFERED_READ = -1;
 static const int PIPE_BUF_SIZE = 65535;
 
@@ -314,8 +314,8 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
     return enif_make_badarg(env);
   }
 
-  char _args_temp[MAX_ARGUMENTS][MAX_ARGUMENT_LEN + 1];
-  char *exec_args[MAX_ARGUMENTS + 1];
+  char _args_temp[args_len][MAX_ARGUMENT_LEN + 1];
+  char *exec_args[args_len + 1];
 
   list = argv[0];
   for (unsigned int i = 0; i < args_len; i++) {
@@ -335,12 +335,9 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
     return enif_make_badarg(env);
   }
 
-  if (args_len > MAX_ARGUMENTS) {
-    error("env size exceeds limit: %d", MAX_ARGUMENTS);
-    return enif_make_badarg(env);
-  }
+  debug("env size: %d", env_len);
 
-  char _env_temp[env_len][MAX_ENV_LEN];
+  char _env_temp[env_len][MAX_ENV_VAR_LEN];
   char *exec_env[env_len + 1];
 
   list = argv[1];
@@ -348,7 +345,7 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
     if (enif_get_list_cell(env, list, &head, &tail) != true)
       return enif_make_badarg(env);
 
-    if (enif_get_string(env, head, _env_temp[i], MAX_ENV_LEN, ERL_NIF_LATIN1) <
+    if (enif_get_string(env, head, _env_temp[i], MAX_ENV_VAR_LEN, ERL_NIF_LATIN1) <
         1)
       return enif_make_badarg(env);
     exec_env[i] = _env_temp[i];

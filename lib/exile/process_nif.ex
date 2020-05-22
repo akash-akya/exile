@@ -1,6 +1,5 @@
 defmodule Exile.ProcessNif do
   @moduledoc false
-
   @on_load :load_nifs
 
   def load_nifs do
@@ -26,4 +25,13 @@ defmodule Exile.ProcessNif do
   def os_pid(_context), do: :erlang.nif_error(:nif_library_not_loaded)
 
   def alive?(_context), do: :erlang.nif_error(:nif_library_not_loaded)
+
+  # non-nif helper functions
+  defmacro fork_exec_failure(), do: 125
+
+  defmacro nif_false(), do: 0
+  defmacro nif_true(), do: 1
+
+  def to_process_fd(:stdin), do: 0
+  def to_process_fd(:stdout), do: 1
 end

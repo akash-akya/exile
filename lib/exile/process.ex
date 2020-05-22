@@ -16,10 +16,9 @@ defmodule Exile.Process do
   """
 
   alias Exile.ProcessNif
+  require Exile.ProcessNif
   require Logger
   use GenServer
-
-  defmacro fork_exec_failure(), do: 125
 
   # delay between exit_check when io is busy (in milliseconds)
   @exit_check_timeout 5
@@ -40,7 +39,10 @@ defmodule Exile.Process do
   """
   def start_link(cmd_with_args, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
-    GenServer.start(__MODULE__, %{cmd_with_args: cmd_with_args, opts: opts})
+
+    with {:ok, args} <- normalize_args(cmd_with_args, opts) do
+      GenServer.start(__MODULE__, args)
+    end
   end
 
   def close_stdin(process) do
@@ -51,7 +53,7 @@ defmodule Exile.Process do
     GenServer.call(process, {:write, IO.iodata_to_binary(iodata)}, :infinity)
   end
 
-  def read(process, size) when is_integer(size) or size == :unbuffered do
+  def read(process, size) when (is_integer(size) and size > 0) or size == :unbuffered do
     GenServer.call(process, {:read, size}, :infinity)
   end
 
@@ -80,8 +82,7 @@ defmodule Exile.Process do
   end
 
   defstruct [
-    :cmd_with_args,
-    :opts,
+    :args,
     :errno,
     :context,
     :status,
@@ -93,22 +94,8 @@ defmodule Exile.Process do
   alias __MODULE__
 
   def init(args) do
-    %{cmd_with_args: [cmd | args], opts: opts} = args
-    path = System.find_executable(cmd)
-
-    unless path do
-      raise "Command not found: #{cmd}"
-    end
-
-    if opts[:cd] do
-      if !File.exists?(opts[:cd]) || !File.dir?(opts[:cd]) do
-        raise ":dir is not a valid path"
-      end
-    end
-
     state = %__MODULE__{
-      cmd_with_args: [path | args],
-      opts: opts,
+      args: args,
       errno: nil,
       status: :init,
       await: %{},
@@ -120,18 +107,16 @@ defmodule Exile.Process do
   end
 
   def handle_continue(nil, state) do
-    exec_args = Enum.map(state.cmd_with_args, &to_charlist/1)
-    stderr_to_console = if state.opts[:stderr_to_console], do: 1, else: 0
-    cd = to_charlist(state.opts[:cd] || "")
-    env = normalize_env(state.opts[:env] || %{})
+    %{cmd_with_args: cmd_with_args, cd: cd, env: env, stderr_to_console: stderr_to_console} =
+      state.args
 
-    case ProcessNif.execute(exec_args, env, cd, stderr_to_console) do
+    case ProcessNif.execute(cmd_with_args, env, cd, stderr_to_console) do
       {:ok, context} ->
-        start_watcher(context)
+        {:ok, _} = Exile.Watcher.watch(self(), context)
         {:noreply, %Process{state | context: context, status: :start}}
 
       {:error, errno} ->
-        raise "Failed to start command: #{state.cmd_with_args}, errno: #{errno}"
+        raise "Failed to start command: #{cmd_with_args}, errno: #{errno}"
     end
   end
 
@@ -272,7 +257,7 @@ defmodule Exile.Process do
 
   defp check_exit(state, from) do
     case ProcessNif.sys_wait(state.context) do
-      {:ok, {:exit, fork_exec_failure()}} ->
+      {:ok, {:exit, ProcessNif.fork_exec_failure()}} ->
         GenServer.reply(from, {:error, :failed_to_execute})
         cancel_timer(state, from, :timeout)
         {:noreply, clear_await(state, from)}
@@ -299,7 +284,7 @@ defmodule Exile.Process do
   defp do_kill(context, :sigterm), do: ProcessNif.sys_terminate(context)
 
   defp do_close(state, type) do
-    case ProcessNif.sys_close(state.context, stream_type(type)) do
+    case ProcessNif.sys_close(state.context, ProcessNif.to_process_fd(type)) do
       :ok ->
         {:reply, :ok, state}
 
@@ -331,73 +316,80 @@ defmodule Exile.Process do
 
   defp get_timer(state, from, key), do: get_in(state.await, [from, key])
 
-  # Try to gracefully terminate external process if the genserver associated with the process is killed
-  defp start_watcher(context) do
-    process_server = self()
-    watcher_pid = spawn(fn -> watcher(process_server, context) end)
+  defp normalize_cmd(cmd) do
+    path = System.find_executable(cmd)
 
-    receive do
-      {^watcher_pid, :done} -> :ok
-    end
-  end
-
-  defp stream_type(:stdin), do: 0
-  defp stream_type(:stdout), do: 1
-
-  defp process_exit?(context) do
-    match?({:ok, _}, ProcessNif.sys_wait(context))
-  end
-
-  defp process_exit?(context, timeout) do
-    if process_exit?(context) do
-      true
+    if path do
+      {:ok, to_charlist(path)}
     else
-      :timer.sleep(timeout)
-      process_exit?(context)
+      {:error, "command not found: #{inspect(cmd)}"}
     end
   end
+
+  defp normalize_cmd_args(args) do
+    if is_list(args) do
+      {:ok, Enum.map(args, &to_charlist/1)}
+    else
+      {:error, "command arguments must be list of strings. #{inspect(args)}"}
+    end
+  end
+
+  defp normalize_cd(nil), do: {:ok, ''}
+
+  defp normalize_cd(cd) do
+    if File.exists?(cd) && File.dir?(cd) do
+      {:ok, to_charlist(cd)}
+    else
+      {:error, "`:cd` must be valid directory path"}
+    end
+  end
+
+  defp normalize_env(nil), do: {:ok, []}
 
   defp normalize_env(env) do
-    Enum.map(env, fn {key, value} ->
-      (String.trim(key) <> "=" <> String.trim(value))
-      |> to_charlist()
-    end)
+    user_env =
+      Map.new(env, fn {key, value} ->
+        {String.trim(key), String.trim(value)}
+      end)
+
+    # spawned process env will be beam env at that time + user env.
+    # this is similar to erlang behavior
+    env_list =
+      Map.merge(System.get_env(), user_env)
+      |> Enum.map(fn {k, v} ->
+        to_charlist(k <> "=" <> v)
+      end)
+
+    {:ok, env_list}
   end
 
-  # for proper process exit parent of the child *must* wait() for
-  # child processes termination exit and "pickup" after the exit
-  # (receive child exit_status). Resources acquired by child such as
-  # file descriptors won't be released even if the child process
-  # itself is terminated.
-  defp watcher(process_server, context) do
-    ref = Elixir.Process.monitor(process_server)
-    send(process_server, {self(), :done})
+  defp normalize_stderr_to_console(nil), do: {:ok, ProcessNif.nif_false()}
 
-    receive do
-      {:DOWN, ^ref, :process, ^process_server, _reason} ->
-        try do
-          Logger.debug(fn -> "Stopping external program" end)
+  defp normalize_stderr_to_console(term) do
+    if term, do: {:ok, ProcessNif.nif_true()}, else: {:ok, ProcessNif.nif_false()}
+  end
 
-          # sys_close is idempotent, calling it multiple times is okay
-          ProcessNif.sys_close(context, stream_type(:stdin))
-          ProcessNif.sys_close(context, stream_type(:stdout))
+  defp validate_opts_fields(opts) do
+    {_, additional_opts} = Keyword.split(opts, [:cd, :stderr_to_console, :env])
 
-          # at max we wait for 100ms for program to exit
-          process_exit?(context, 100) && throw(:done)
-
-          Logger.debug("Failed to stop external program gracefully. attempting SIGTERM")
-          ProcessNif.sys_terminate(context)
-          process_exit?(context, 100) && throw(:done)
-
-          Logger.debug("Failed to stop external program with SIGTERM. attempting SIGKILL")
-          ProcessNif.sys_kill(context)
-          process_exit?(context, 1000) && throw(:done)
-
-          Logger.error("[exile] failed to kill external process")
-          raise "Failed to kill external process"
-        catch
-          :done -> Logger.debug(fn -> "External program exited successfully" end)
-        end
+    if Enum.empty?(additional_opts) do
+      :ok
+    else
+      {:error, "invalid opts: #{inspect(additional_opts)}"}
     end
   end
+
+  defp normalize_args([cmd | args], opts) when is_list(opts) do
+    with {:ok, cmd} <- normalize_cmd(cmd),
+         {:ok, args} <- normalize_cmd_args(args),
+         :ok <- validate_opts_fields(opts),
+         {:ok, cd} <- normalize_cd(opts[:cd]),
+         {:ok, stderr_to_console} <- normalize_stderr_to_console(opts[:stderr_to_console]),
+         {:ok, env} <- normalize_env(opts[:env]) do
+      {:ok,
+       %{cmd_with_args: [cmd | args], cd: cd, stderr_to_console: stderr_to_console, env: env}}
+    end
+  end
+
+  defp normalize_args(_, _), do: {:error, "invalid arguments"}
 end

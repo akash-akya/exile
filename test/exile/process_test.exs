@@ -8,6 +8,7 @@ defmodule Exile.ProcessTest do
     assert IO.iodata_to_binary(iodata) == "test\n"
     assert :ok == Process.close_stdin(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+    Process.stop(s)
   end
 
   test "write" do
@@ -23,6 +24,7 @@ defmodule Exile.ProcessTest do
     assert :ok == Process.close_stdin(s)
     assert {:eof, []} == Process.read(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 100)
+    Process.stop(s)
   end
 
   test "stdin close" do
@@ -45,7 +47,8 @@ defmodule Exile.ProcessTest do
 
     assert :ok == Process.close_stdin(s)
     add_event(logger, :input_close)
-    assert {:ok, {:exit, 0}} == Process.await_exit(s, 50)
+    assert {:ok, {:exit, 0}} == Process.await_exit(s, 100)
+    Process.stop(s)
 
     assert [
              {:write, "hello"},
@@ -86,6 +89,7 @@ defmodule Exile.ProcessTest do
   test "exit status" do
     {:ok, s} = Process.start_link(~w(sh -c "exit 2"))
     assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
+    Process.stop(s)
   end
 
   test "writing binary larger than pipe buffer size" do
@@ -105,6 +109,7 @@ defmodule Exile.ProcessTest do
 
     assert IO.iodata_length(iodata) == 5 * 65535
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+    Process.stop(s)
   end
 
   test "back-pressure" do
@@ -141,6 +146,7 @@ defmodule Exile.ProcessTest do
     Task.await(reader)
 
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+    Process.stop(s)
 
     assert [
              write: 1,
@@ -211,17 +217,44 @@ defmodule Exile.ProcessTest do
     {:ok, dir} = Process.read(s)
     assert String.trim(dir) == parent
     assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
   end
 
   test "invalid path" do
     assert {:error, _} = Process.start_link(~w(sh -c pwd), cd: "invalid")
   end
 
-  test "env" do
-    assert {:ok, s} = Process.start_link([fixture("env.sh")], env: %{"TEST_ENV" => "test"})
+  test "invalid opt" do
+    assert {:error, "invalid opts: [invalid: :test]"} =
+             Process.start_link(~w(cat), invalid: :test)
+  end
 
-    assert {:ok, "test"} = Process.read(s)
+  test "env" do
+    assert {:ok, s} = Process.start_link(~w(printenv TEST_ENV), env: %{"TEST_ENV" => "test"})
+
+    assert {:ok, "test\n"} = Process.read(s)
     assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
+  end
+
+  test "if external process inherits beam env" do
+    :ok = System.put_env([{"BEAM_ENV_A", "10"}])
+    assert {:ok, s} = Process.start_link(~w(printenv BEAM_ENV_A))
+
+    assert {:ok, "10\n"} = Process.read(s)
+    assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
+  end
+
+  test "if user env overrides beam env" do
+    :ok = System.put_env([{"BEAM_ENV", "base"}])
+
+    assert {:ok, s} =
+             Process.start_link(~w(printenv BEAM_ENV), env: %{"BEAM_ENV" => "overridden"})
+
+    assert {:ok, "overridden\n"} = Process.read(s)
+    assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
   end
 
   def start_parallel_reader(proc_server, logger) do

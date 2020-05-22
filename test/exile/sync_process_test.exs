@@ -22,5 +22,33 @@ defmodule Exile.SyncProcessTest do
 
     assert :ok == Process.close_stdin(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+    Process.stop(s)
+  end
+
+  test "if watcher process exits on command exit" do
+    stop_all_children(Exile.WatcherSupervisor)
+
+    assert %{active: 0, workers: 0} = DynamicSupervisor.count_children(Exile.WatcherSupervisor)
+    assert {:ok, s} = Process.start_link(~w(cat))
+
+    # we spawn in background
+    :timer.sleep(200)
+
+    assert %{active: 1, workers: 1} = DynamicSupervisor.count_children(Exile.WatcherSupervisor)
+
+    Process.close_stdin(s)
+    assert {:ok, {:exit, 0}} = Process.await_exit(s, 500)
+    Process.stop(s)
+
+    # wait for watcher to terminate
+    :timer.sleep(200)
+    assert %{active: 0, workers: 0} = DynamicSupervisor.count_children(Exile.WatcherSupervisor)
+  end
+
+  defp stop_all_children(sup) do
+    DynamicSupervisor.which_children(sup)
+    |> Enum.each(fn {_, pid, _, _} ->
+      DynamicSupervisor.terminate_child(sup, pid)
+    end)
   end
 end
