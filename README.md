@@ -34,15 +34,11 @@ There are many port based libraries such as [Porcelain](https://github.com/alco/
 * in few cases such as porcelain user has to install this external program explicitly
 * might not be suitable when the program requires constant communication between beam process and external program
 
+Note that Unlike Exile, bugs in port based implementation does not bring down beam VM.
+
 #### [ExCmd](https://github.com/akash-akya/ex_cmd)
 
-This is my other stab at solving back pressure on the external program issue. ExCmd also uses a middleware for the operation. But unlike the above libraries, it uses named pipes (FIFO) for io instead of port. Back-pressure created by the blocking system calls.
-
-__Issue__
-
-ExCmd uses blocking system calls for building back-pressure. For example, reading the output from the program internally resolves to a blocking [`read()`](http://man7.org/linux/man-pages/man2/read.2.html) system call. This blocks the dirty io scheduler indefinitely. Since the scheduler can not preempt system call, the scheduler will be blocked until `read()` returns. Worst case scenario: there are as many blocking read/write as there are dirty io schedulers. This can lead to starvation of other io operations, low throughput, and dreaded scheduler collapse.
-
-As of now, there are no non-blocking io file operations available to the user in beam. See ExCmd for possible workaround for this issue.
+This is my other stab at solving back pressure on the external program issue. It implements a demand-driven protocol using [odu](https://github.com/akash-akya/odu) to solve this. Since ExCmd is also a port based solution, concerns previously mentioned applies to ExCmd too.
 
 ## Exile
 
