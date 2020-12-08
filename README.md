@@ -67,3 +67,9 @@ Non-blocking io can be used for other interesting things. Such as reading named 
 As with any NIF based solution, bugs or issues in Exile implementation **can bring down the beam VM**. But NIF implementation is comparatively small and mostly uses POSIX system calls, spawned external processes are still completely isolated at OS level and the port issues it tries to solve are critical.
 
 If all you want is to run a command with no communication, then just sticking with `System.cmd` is a better option.
+
+### License
+
+Copyright (c) 2020 Akash Hiremath.
+
+Exile source code is released under Apache License 2.0. Check [LICENSE](LICENSE.md) for more information.
