@@ -50,19 +50,9 @@
     }                                                                          \
   } while (0);
 
-static const int PIPE_READ = 0;
-static const int PIPE_WRITE = 1;
-static const int PIPE_CLOSED = -1;
 static const int CMD_EXIT = -1;
-static const int MAX_ARGUMENTS = 50;
-static const int MAX_ARGUMENT_LEN = 1024;
-static const int MAX_ENV_VAR_LEN = 1024;
 static const int UNBUFFERED_READ = -1;
 static const int PIPE_BUF_SIZE = 65535;
-
-/* We are choosing an exit code which is not reserved see:
- * https://www.tldp.org/LDP/abs/html/exitcodes.html. */
-static const int FORK_EXEC_FAILURE = 125;
 
 static ERL_NIF_TERM ATOM_TRUE;
 static ERL_NIF_TERM ATOM_FALSE;
@@ -150,25 +140,14 @@ static void io_resource_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
 static ErlNifResourceTypeInit io_rt_init = {io_resource_dtor, io_resource_stop,
                                             io_resource_down};
 
+static ErlNifResourceType *FD_RT;
+
 static inline ERL_NIF_TERM make_ok(ErlNifEnv *env, ERL_NIF_TERM term) {
   return enif_make_tuple2(env, ATOM_OK, term);
 }
 
 static inline ERL_NIF_TERM make_error(ErlNifEnv *env, ERL_NIF_TERM term) {
   return enif_make_tuple2(env, ATOM_ERROR, term);
-}
-
-static int set_flag(int fd, int flags) {
-  return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | flags);
-}
-
-static void close_all(int pipes[2][2]) {
-  for (int i = 0; i < 2; i++) {
-    if (pipes[i][PIPE_READ] > 0)
-      close(pipes[i][PIPE_READ]);
-    if (pipes[i][PIPE_WRITE] > 0)
-      close(pipes[i][PIPE_WRITE]);
-  }
 }
 
 /* time is assumed to be in microseconds */
@@ -184,239 +163,31 @@ static void notify_consumed_timeslice(ErlNifEnv *env, ErlNifTime start,
   enif_consume_timeslice(env, pct);
 }
 
-/* This is not ideal, but as of now there is no portable way to do this */
-static void close_all_fds() {
-  int fd_limit = (int)sysconf(_SC_OPEN_MAX);
-  for (int i = STDERR_FILENO + 1; i < fd_limit; i++)
-    close(i);
-}
+static int select_write_async(ErlNifEnv *env, int *fd) {
+  int ret =
+      enif_select(env, *fd, ERL_NIF_SELECT_WRITE, fd, NULL, ATOM_UNDEFINED);
 
-static StartProcessResult start_process(char *const args[],
-                                        bool stderr_to_console,
-                                        const char dir[],
-                                        char *const exec_env[]) {
-  StartProcessResult result = {.success = false};
-  pid_t pid;
-  int pipes[2][2] = {{0, 0}, {0, 0}};
-
-  if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1) {
-    result.err = errno;
-    perror("[exile] failed to create pipes");
-    close_all(pipes);
-    return result;
-  }
-
-  const int r_cmdin = pipes[STDIN_FILENO][PIPE_READ];
-  const int w_cmdin = pipes[STDIN_FILENO][PIPE_WRITE];
-
-  const int r_cmdout = pipes[STDOUT_FILENO][PIPE_READ];
-  const int w_cmdout = pipes[STDOUT_FILENO][PIPE_WRITE];
-
-  if (set_flag(r_cmdin, O_CLOEXEC) < 0 || set_flag(w_cmdout, O_CLOEXEC) < 0 ||
-      set_flag(w_cmdin, O_CLOEXEC | O_NONBLOCK) < 0 ||
-      set_flag(r_cmdout, O_CLOEXEC | O_NONBLOCK) < 0) {
-    result.err = errno;
-    perror("[exile] failed to set flags for pipes");
-    close_all(pipes);
-    return result;
-  }
-
-  switch (pid = fork()) {
-
-  case -1:
-    result.err = errno;
-    perror("[exile] failed to fork");
-    close_all(pipes);
-    return result;
-
-  case 0: // child
-
-    if (dir[0] && chdir(dir) != 0) {
-      perror("[exile] failed to change directory");
-      _exit(FORK_EXEC_FAILURE);
-    }
-
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-
-    if (dup2(r_cmdin, STDIN_FILENO) < 0) {
-      perror("[exile] failed to dup to stdin");
-
-      /* We are assuming FORK_EXEC_FAILURE exit code wont be used by the command
-       * we are running. Technically we can not assume any exit code here. The
-       * parent can not differentiate between exit before `exec` and the normal
-       * command exit.
-       * One correct way to solve this might be to have a separate
-       * pipe shared between child and parent and signaling the parent by
-       * closing it or writing to it. */
-      _exit(FORK_EXEC_FAILURE);
-    }
-    if (dup2(w_cmdout, STDOUT_FILENO) < 0) {
-      perror("[exile] failed to dup to stdout");
-      _exit(FORK_EXEC_FAILURE);
-    }
-
-    if (stderr_to_console != true) {
-      close(STDERR_FILENO);
-      int dev_null = open("/dev/null", O_WRONLY);
-
-      if (dev_null == -1) {
-        perror("[exile] failed to open /dev/null");
-        _exit(FORK_EXEC_FAILURE);
-      }
-
-      if (dup2(dev_null, STDERR_FILENO) < 0) {
-        perror("[exile] failed to dup stderr");
-        _exit(FORK_EXEC_FAILURE);
-      }
-
-      close(dev_null);
-    }
-
-    close_all_fds();
-
-    execve(args[0], args, exec_env);
-    perror("[exile] execvp(): failed");
-
-    _exit(FORK_EXEC_FAILURE);
-
-  default: // parent
-    /* close file descriptors used by child */
-    close(r_cmdin);
-    close(w_cmdout);
-
-    result.success = true;
-    result.context.pid = pid;
-    result.context.cmd_input_fd = w_cmdin;
-    result.context.cmd_output_fd = r_cmdout;
-
-    return result;
-  }
-}
-
-/* TODO: return appropriate error instead returning generic "badarg" error */
-static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
-                            const ERL_NIF_TERM argv[]) {
-  char dir[1024] = {'\0'};
-  ErlNifTime start;
-  unsigned int args_len, env_len;
-  ERL_NIF_TERM head, tail, list;
-
-  start = enif_monotonic_time(ERL_NIF_USEC);
-
-  if (enif_get_list_length(env, argv[0], &args_len) != true) {
-    error("invalid command with arguments param");
-    return enif_make_badarg(env);
-  }
-
-  if (args_len > MAX_ARGUMENTS) {
-    error("command argument size exceeds limit: %d", MAX_ARGUMENTS);
-    return enif_make_badarg(env);
-  }
-
-  char _args_temp[args_len][MAX_ARGUMENT_LEN + 1];
-  char *exec_args[args_len + 1];
-
-  list = argv[0];
-  for (unsigned int i = 0; i < args_len; i++) {
-    if (enif_get_list_cell(env, list, &head, &tail) != true)
-      return enif_make_badarg(env);
-
-    if (enif_get_string(env, head, _args_temp[i], MAX_ARGUMENT_LEN,
-                        ERL_NIF_LATIN1) < 1)
-      return enif_make_badarg(env);
-    exec_args[i] = _args_temp[i];
-    list = tail;
-  }
-  exec_args[args_len] = NULL;
-
-  if (enif_get_list_length(env, argv[1], &env_len) != true) {
-    error("invalid env param");
-    return enif_make_badarg(env);
-  }
-
-  debug("env size: %d", env_len);
-
-  char _env_temp[env_len][MAX_ENV_VAR_LEN];
-  char *exec_env[env_len + 1];
-
-  list = argv[1];
-  for (unsigned int i = 0; i < env_len; i++) {
-    if (enif_get_list_cell(env, list, &head, &tail) != true)
-      return enif_make_badarg(env);
-
-    if (enif_get_string(env, head, _env_temp[i], MAX_ENV_VAR_LEN, ERL_NIF_LATIN1) <
-        1)
-      return enif_make_badarg(env);
-    exec_env[i] = _env_temp[i];
-    list = tail;
-  }
-  exec_env[env_len] = NULL;
-
-  bool stderr_to_console = true;
-  int tmp_int;
-  if (enif_get_int(env, argv[3], &tmp_int) != true)
-    return enif_make_badarg(env);
-  stderr_to_console = tmp_int == 1 ? true : false;
-
-  if (enif_get_string(env, argv[2], dir, 1024, ERL_NIF_LATIN1) < 0) {
-    return enif_make_badarg(env);
-  }
-
-  struct ExilePriv *data = enif_priv_data(env);
-  StartProcessResult result =
-      start_process(exec_args, stderr_to_console, dir, exec_env);
-  ExecContext *ctx = NULL;
-  ERL_NIF_TERM term;
-
-  if (result.success) {
-    ctx = enif_alloc_resource(data->exec_ctx_rt, sizeof(ExecContext));
-    ctx->cmd_input_fd = result.context.cmd_input_fd;
-    ctx->cmd_output_fd = result.context.cmd_output_fd;
-    ctx->read_resource = enif_alloc_resource(data->io_rt, sizeof(int));
-    ctx->write_resource = enif_alloc_resource(data->io_rt, sizeof(int));
-    ctx->pid = result.context.pid;
-
-    debug("pid: %d  cmd_in_fd: %d  cmd_out_fd: %d", ctx->pid, ctx->cmd_input_fd,
-          ctx->cmd_output_fd);
-
-    term = enif_make_resource(env, ctx);
-
-    /* resource should be collected beam GC when there are no more references */
-    enif_release_resource(ctx);
-
-    notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
-
-    return make_ok(env, term);
-  } else {
-    return make_error(env, enif_make_int(env, result.err));
-  }
-}
-
-static int select_write(ErlNifEnv *env, ExecContext *ctx) {
-  int retval = enif_select(env, ctx->cmd_input_fd, ERL_NIF_SELECT_WRITE,
-                           ctx->write_resource, NULL, ATOM_UNDEFINED);
-  if (retval != 0)
+  if (ret != 0)
     perror("select_write()");
-
-  return retval;
+  return ret;
 }
 
-static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
+static ERL_NIF_TERM nif_write(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
   if (argc != 2)
     enif_make_badarg(env);
 
   ErlNifTime start;
+  ssize_t size;
+  ErlNifBinary bin;
+  int write_errno;
+  int *fd;
+
   start = enif_monotonic_time(ERL_NIF_USEC);
 
-  ExecContext *ctx = NULL;
-  GET_CTX(env, argv[0], ctx);
+  if (!enif_get_resource(env, argv[0], FD_RT, (void **)&fd))
+    return make_error(env, ATOM_INVALID_CTX);
 
-  if (ctx->cmd_input_fd == PIPE_CLOSED)
-    return make_error(env, ATOM_PIPE_CLOSED);
-
-  ErlNifBinary bin;
   if (enif_inspect_binary(env, argv[1], &bin) != true)
     return enif_make_badarg(env);
 
@@ -424,21 +195,20 @@ static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
     return enif_make_badarg(env);
 
   /* should we limit the bin.size here? */
-  ssize_t result = write(ctx->cmd_input_fd, bin.data, bin.size);
-  int write_errno = errno;
+  size = write(*fd, bin.data, bin.size);
+  write_errno = errno;
 
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
-  /* TODO: branching is ugly, cleanup required */
-  if (result >= (ssize_t)bin.size) { // request completely satisfied
-    return make_ok(env, enif_make_int(env, result));
-  } else if (result >= 0) { // request partially satisfied
-    int retval = select_write(env, ctx);
+  if (size >= (ssize_t)bin.size) { // request completely satisfied
+    return make_ok(env, enif_make_int(env, size));
+  } else if (size >= 0) { // request partially satisfied
+    int retval = select_write_async(env, fd);
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
-    return make_ok(env, enif_make_int(env, result));
+    return make_ok(env, enif_make_int(env, size));
   } else if (write_errno == EAGAIN || write_errno == EWOULDBLOCK) { // busy
-    int retval = select_write(env, ctx);
+    int retval = select_write_async(env, fd);
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_error(env, ATOM_EAGAIN);
@@ -448,89 +218,67 @@ static ERL_NIF_TERM sys_write(ErlNifEnv *env, int argc,
   }
 }
 
-static ERL_NIF_TERM sys_close(ErlNifEnv *env, int argc,
-                              const ERL_NIF_TERM argv[]) {
-  ExecContext *ctx = NULL;
-  GET_CTX(env, argv[0], ctx);
+static int select_read_async(ErlNifEnv *env, int *fd) {
+  int ret =
+      enif_select(env, *fd, ERL_NIF_SELECT_READ, fd, NULL, ATOM_UNDEFINED);
 
-  int kind;
-  enif_get_int(env, argv[1], &kind);
-
-  int result;
-  switch (kind) {
-  case 0:
-    if (ctx->cmd_input_fd == PIPE_CLOSED) {
-      return ATOM_OK;
-    } else {
-      enif_select(env, ctx->cmd_input_fd, ERL_NIF_SELECT_STOP,
-                  ctx->write_resource, NULL, ATOM_UNDEFINED);
-      result = close(ctx->cmd_input_fd);
-      if (result == 0) {
-        ctx->cmd_input_fd = PIPE_CLOSED;
-        return ATOM_OK;
-      } else {
-        perror("cmd_input_fd close()");
-        return make_error(env, enif_make_int(env, errno));
-      }
-    }
-  case 1:
-    if (ctx->cmd_output_fd == PIPE_CLOSED) {
-      return ATOM_OK;
-    } else {
-      enif_select(env, ctx->cmd_output_fd, ERL_NIF_SELECT_STOP,
-                  ctx->read_resource, NULL, ATOM_UNDEFINED);
-      result = close(ctx->cmd_output_fd);
-      if (result == 0) {
-        ctx->cmd_output_fd = PIPE_CLOSED;
-        return ATOM_OK;
-      } else {
-        perror("cmd_output_fd close()");
-        return make_error(env, enif_make_int(env, errno));
-      }
-    }
-  default:
-    debug("invalid file descriptor type");
-    return enif_make_badarg(env);
-  }
-}
-
-static int select_read(ErlNifEnv *env, ExecContext *ctx) {
-  int retval = enif_select(env, ctx->cmd_output_fd, ERL_NIF_SELECT_READ,
-                           ctx->read_resource, NULL, ATOM_UNDEFINED);
-  if (retval != 0)
+  if (ret != 0)
     perror("select_read()");
-  return retval;
+  return ret;
 }
 
-static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
-                             const ERL_NIF_TERM argv[]) {
+static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
+                                  const ERL_NIF_TERM argv[]) {
+  if (argc != 1)
+    enif_make_badarg(env);
+
+  ERL_NIF_TERM term;
+  int *fd;
+
+  fd = enif_alloc_resource(FD_RT, sizeof(int));
+
+  if (!enif_get_int(env, argv[0], fd))
+    goto error_exit;
+
+  term = enif_make_resource(env, fd);
+  enif_release_resource(fd);
+
+  return make_ok(env, term);
+
+error_exit:
+  enif_release_resource(fd);
+  return ATOM_ERROR;
+}
+
+static ERL_NIF_TERM nif_read_async(ErlNifEnv *env, int argc,
+                                   const ERL_NIF_TERM argv[]) {
   if (argc != 2)
     enif_make_badarg(env);
 
   ErlNifTime start;
+  int size, demand;
+  int *fd;
+
   start = enif_monotonic_time(ERL_NIF_USEC);
 
-  ExecContext *ctx = NULL;
-  GET_CTX(env, argv[0], ctx);
+  if (!enif_get_resource(env, argv[0], FD_RT, (void **)&fd))
+    return make_error(env, ATOM_INVALID_CTX);
 
-  if (ctx->cmd_output_fd == PIPE_CLOSED)
-    return make_error(env, ATOM_PIPE_CLOSED);
+  if (!enif_get_int(env, argv[1], &demand))
+    return enif_make_badarg(env);
 
-  int size, request;
+  size = demand;
 
-  enif_get_int(env, argv[1], &request);
-  size = request;
-
-  if (request == UNBUFFERED_READ) {
+  if (demand == UNBUFFERED_READ) {
     size = PIPE_BUF_SIZE;
-  } else if (request < 1) {
+  } else if (demand < 1) {
     enif_make_badarg(env);
-  } else if (request > PIPE_BUF_SIZE) {
+  } else if (demand > PIPE_BUF_SIZE) {
     size = PIPE_BUF_SIZE;
   }
 
   unsigned char buf[size];
-  ssize_t result = read(ctx->cmd_output_fd, buf, size);
+  ssize_t result = read(*fd, buf, size);
   int read_errno = errno;
 
   ERL_NIF_TERM bin_term = 0;
@@ -543,19 +291,19 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
   if (result >= 0) {
-    /* we do not 'select' if request completely satisfied OR EOF OR its
+    /* we do not 'select' if demand completely satisfied OR EOF OR its
      * UNBUFFERED_READ */
-    if (result == request || result == 0 || request == UNBUFFERED_READ) {
+    if (result == demand || result == 0 || demand == UNBUFFERED_READ) {
       return make_ok(env, bin_term);
-    } else { // request partially satisfied
-      int retval = select_read(env, ctx);
+    } else { // demand partially satisfied
+      int retval = select_read_async(env, fd);
       if (retval != 0)
         return make_error(env, enif_make_int(env, retval));
       return make_ok(env, bin_term);
     }
   } else {
     if (read_errno == EAGAIN || read_errno == EWOULDBLOCK) { // busy
-      int retval = select_read(env, ctx);
+      int retval = select_read_async(env, fd);
       if (retval != 0)
         return make_error(env, enif_make_int(env, retval));
       return make_error(env, ATOM_EAGAIN);
@@ -564,6 +312,25 @@ static ERL_NIF_TERM sys_read(ErlNifEnv *env, int argc,
       return make_error(env, enif_make_int(env, read_errno));
     }
   }
+}
+
+static ERL_NIF_TERM nif_close(ErlNifEnv *env, int argc,
+                              const ERL_NIF_TERM argv[]) {
+  if (argc != 1)
+    enif_make_badarg(env);
+
+  ErlNifTime start;
+  int *fd;
+
+  start = enif_monotonic_time(ERL_NIF_USEC);
+
+  if (!enif_get_resource(env, argv[0], FD_RT, (void **)&fd))
+    return make_error(env, ATOM_INVALID_CTX);
+
+  close(*fd);
+
+  notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
+  return ATOM_OK;
 }
 
 static ERL_NIF_TERM is_alive(ErlNifEnv *env, int argc,
@@ -677,6 +444,10 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
       enif_open_resource_type_x(env, "exile_resource", &io_rt_init,
                                 ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, NULL);
 
+  FD_RT =
+      enif_open_resource_type_x(env, "exile_resource", &io_rt_init,
+                                ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, NULL);
+
   ATOM_TRUE = enif_make_atom(env, "true");
   ATOM_FALSE = enif_make_atom(env, "false");
   ATOM_OK = enif_make_atom(env, "ok");
@@ -701,13 +472,13 @@ static void on_unload(ErlNifEnv *env, void *priv) {
 }
 
 static ErlNifFunc nif_funcs[] = {
-    {"execute", 4, execute, USE_DIRTY_IO},
-    {"sys_write", 2, sys_write, USE_DIRTY_IO},
-    {"sys_read", 2, sys_read, USE_DIRTY_IO},
-    {"sys_close", 2, sys_close, USE_DIRTY_IO},
     {"sys_terminate", 1, sys_terminate, USE_DIRTY_IO},
     {"sys_wait", 1, sys_wait, USE_DIRTY_IO},
     {"sys_kill", 1, sys_kill, USE_DIRTY_IO},
+    {"nif_read_async", 2, nif_read_async, USE_DIRTY_IO},
+    {"nif_create_fd", 1, nif_create_fd, USE_DIRTY_IO},
+    {"nif_write", 2, nif_write, USE_DIRTY_IO},
+    {"nif_close", 1, nif_close, USE_DIRTY_IO},
     {"alive?", 1, is_alive, USE_DIRTY_IO},
     {"os_pid", 1, os_pid, USE_DIRTY_IO},
 };

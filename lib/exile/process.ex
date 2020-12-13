@@ -15,7 +15,7 @@ defmodule Exile.Process do
   At high level it makes non-blocking asynchronous system calls to execute and interact with the external program. It completely bypasses beam implementation for the same using NIF. It uses `select()` system call for asynchronous IO. Most of the system calls are non-blocking, so it does not has adverse effect on scheduler. Issues such as "scheduler collapse".
   """
 
-  alias Exile.ProcessNif
+  alias Exile.ProcessNif, as: Nif
   require Exile.ProcessNif
   require Logger
   use GenServer
@@ -23,7 +23,7 @@ defmodule Exile.Process do
   # delay between exit_check when io is busy (in milliseconds)
   @exit_check_timeout 5
 
-  @default_opts [stderr_to_console: false, env: []]
+  @default_opts [env: []]
 
   @doc """
   Starts `Exile.ProcessServer`
@@ -35,7 +35,6 @@ defmodule Exile.Process do
   ### Options
     * `cd`                -  the directory to run the command in
     * `env`               -  an enumerable of tuples containing environment key-value. These can be accessed in the external program
-    * `stderr_to_console` -  whether to print stderr output to console. Defaults to `false`
   """
   def start_link(cmd_with_args, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
@@ -84,6 +83,10 @@ defmodule Exile.Process do
   defstruct [
     :args,
     :errno,
+    :port,
+    :socket_path,
+    :stdin,
+    :stdout,
     :context,
     :status,
     await: %{},
@@ -107,17 +110,31 @@ defmodule Exile.Process do
   end
 
   def handle_continue(nil, state) do
-    %{cmd_with_args: cmd_with_args, cd: cd, env: env, stderr_to_console: stderr_to_console} =
-      state.args
+    %{cmd_with_args: cmd_with_args, cd: cd, env: env} = state.args
+    socket_path = socket_path()
+    Exile.Watcher.watch(self(), socket_path)
 
-    case ProcessNif.execute(cmd_with_args, env, cd, stderr_to_console) do
-      {:ok, context} ->
-        {:ok, _} = Exile.Watcher.watch(self(), context)
-        {:noreply, %Process{state | context: context, status: :start}}
+    {:ok, uds} = :socket.open(:local, :stream, :default)
+    _ = :file.delete(socket_path)
+    {:ok, _} = :socket.bind(uds, %{family: :local, path: socket_path})
+    :ok = :socket.listen(uds)
 
-      {:error, errno} ->
-        raise "Failed to start command: #{cmd_with_args}, errno: #{errno}"
-    end
+    port = exec(cmd_with_args, socket_path, env, cd)
+
+    {write_fd_int, read_fd_int} = receive_fds(uds)
+
+    {:ok, write_fd} = Nif.nif_create_fd(write_fd_int)
+    {:ok, read_fd} = Nif.nif_create_fd(read_fd_int)
+
+    {:noreply,
+     %Process{
+       state
+       | port: port,
+         status: :start,
+         socket_path: socket_path,
+         stdin: read_fd,
+         stdout: write_fd
+     }}
   end
 
   def handle_call(:stop, _from, state) do
@@ -130,17 +147,17 @@ defmodule Exile.Process do
 
   def handle_call(_, _from, %{status: {:exit, status}}), do: {:reply, {:error, {:exit, status}}}
 
-  def handle_call({:await_exit, timeout}, from, state) do
-    tref =
-      if timeout != :infinity do
-        Elixir.Process.send_after(self(), {:await_exit_timeout, from}, timeout)
-      else
-        nil
-      end
+  # def handle_call({:await_exit, timeout}, from, state) do
+  #   tref =
+  #     if timeout != :infinity do
+  #       Elixir.Process.send_after(self(), {:await_exit_timeout, from}, timeout)
+  #     else
+  #       nil
+  #     end
 
-    state = put_timer(state, from, :timeout, tref)
-    check_exit(state, from)
-  end
+  #   state = put_timer(state, from, :timeout, tref)
+  #   check_exit(state, from)
+  # end
 
   def handle_call({:write, binary}, from, state) when is_binary(binary) do
     pending = %Pending{bin: binary, client_pid: from}
@@ -154,14 +171,9 @@ defmodule Exile.Process do
 
   def handle_call(:close_stdin, _from, state), do: do_close(state, :stdin)
 
-  def handle_call(:os_pid, _from, state), do: {:reply, ProcessNif.os_pid(state.context), state}
+  def handle_call(:os_pid, _from, state), do: {:reply, Nif.os_pid(state.context), state}
 
-  def handle_call({:kill, signal}, _from, state) do
-    do_kill(state.context, signal)
-    {:reply, :ok, %{state | status: {:exit, :killed}}}
-  end
-
-  def handle_info({:check_exit, from}, state), do: check_exit(state, from)
+  # def handle_info({:check_exit, from}, state), do: check_exit(state, from)
 
   def handle_info({:await_exit_timeout, from}, state) do
     cancel_timer(state, from, :check)
@@ -188,7 +200,7 @@ defmodule Exile.Process do
   end
 
   defp do_write(%Process{pending_write: pending} = state) do
-    case ProcessNif.sys_write(state.context, pending.bin) do
+    case Nif.nif_write(state.stdin, pending.bin) do
       {:ok, size} ->
         if size < byte_size(pending.bin) do
           binary = binary_part(pending.bin, size, byte_size(pending.bin) - size)
@@ -208,7 +220,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: %Pending{remaining: :unbuffered} = pending} = state) do
-    case ProcessNif.sys_read(state.context, -1) do
+    case Nif.nif_read_async(state.stdout, -1) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, []})
         {:noreply, state}
@@ -227,7 +239,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: pending} = state) do
-    case ProcessNif.sys_read(state.context, pending.remaining) do
+    case Nif.nif_read_async(state.stdout, pending.remaining) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, pending.bin})
         {:noreply, %Process{state | pending_read: %Pending{}}}
@@ -255,36 +267,43 @@ defmodule Exile.Process do
     end
   end
 
-  defp check_exit(state, from) do
-    case ProcessNif.sys_wait(state.context) do
-      {:ok, {:exit, ProcessNif.fork_exec_failure()}} ->
-        GenServer.reply(from, {:error, :failed_to_execute})
-        cancel_timer(state, from, :timeout)
-        {:noreply, clear_await(state, from)}
+  # defp check_exit(state, from) do
+  #   case Nif.sys_wait(state.context) do
+  #     {:ok, {:exit, Nif.fork_exec_failure()}} ->
+  #       GenServer.reply(from, {:error, :failed_to_execute})
+  #       cancel_timer(state, from, :timeout)
+  #       {:noreply, clear_await(state, from)}
 
-      {:ok, status} ->
-        GenServer.reply(from, {:ok, status})
-        cancel_timer(state, from, :timeout)
-        {:noreply, clear_await(state, from)}
+  #     {:ok, status} ->
+  #       GenServer.reply(from, {:ok, status})
+  #       cancel_timer(state, from, :timeout)
+  #       {:noreply, clear_await(state, from)}
 
-      {:error, {0, _}} ->
-        # Ideally we should not poll and we should handle this with SIGCHLD signal
-        tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
-        {:noreply, put_timer(state, from, :check, tref)}
+  #     {:error, {0, _}} ->
+  #       # Ideally we should not poll and we should handle this with SIGCHLD signal
+  #       tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
+  #       {:noreply, put_timer(state, from, :check, tref)}
 
-      {:error, {-1, status}} ->
-        GenServer.reply(from, {:error, status})
-        cancel_timer(state, from, :timeout)
-        {:noreply, clear_await(state, from)}
-    end
-  end
+  #     {:error, {-1, status}} ->
+  #       GenServer.reply(from, {:error, status})
+  #       cancel_timer(state, from, :timeout)
+  #       {:noreply, clear_await(state, from)}
+  #   end
+  # end
 
-  defp do_kill(context, :sigkill), do: ProcessNif.sys_kill(context)
+  defp do_kill(context, :sigkill), do: Nif.sys_kill(context)
 
-  defp do_kill(context, :sigterm), do: ProcessNif.sys_terminate(context)
+  defp do_kill(context, :sigterm), do: Nif.sys_terminate(context)
 
   defp do_close(state, type) do
-    case ProcessNif.sys_close(state.context, ProcessNif.to_process_fd(type)) do
+    fd =
+      if type == :stdin do
+        state.stdin
+      else
+        state.stdout
+      end
+
+    case Nif.nif_close(fd) do
       :ok ->
         {:reply, :ok, state}
 
@@ -363,14 +382,8 @@ defmodule Exile.Process do
     {:ok, env_list}
   end
 
-  defp normalize_stderr_to_console(nil), do: {:ok, ProcessNif.nif_false()}
-
-  defp normalize_stderr_to_console(term) do
-    if term, do: {:ok, ProcessNif.nif_true()}, else: {:ok, ProcessNif.nif_false()}
-  end
-
   defp validate_opts_fields(opts) do
-    {_, additional_opts} = Keyword.split(opts, [:cd, :stderr_to_console, :env])
+    {_, additional_opts} = Keyword.split(opts, [:cd, :env])
 
     if Enum.empty?(additional_opts) do
       :ok
@@ -384,12 +397,62 @@ defmodule Exile.Process do
          {:ok, args} <- normalize_cmd_args(args),
          :ok <- validate_opts_fields(opts),
          {:ok, cd} <- normalize_cd(opts[:cd]),
-         {:ok, stderr_to_console} <- normalize_stderr_to_console(opts[:stderr_to_console]),
          {:ok, env} <- normalize_env(opts[:env]) do
-      {:ok,
-       %{cmd_with_args: [cmd | args], cd: cd, stderr_to_console: stderr_to_console, env: env}}
+      {:ok, %{cmd_with_args: [cmd | args], cd: cd, env: env}}
     end
   end
 
   defp normalize_args(_, _), do: {:error, "invalid arguments"}
+
+  @spawner_path Path.expand("../../c_src/spawner", __DIR__) |> to_charlist()
+
+  defp exec(cmd_with_args, socket_path, env, cd) do
+    opts = []
+
+    # opts = if cd, do: [cd: cd], else: []
+    # opts = if env, do: [{:env, env} | opts], else: opts
+
+    opts =
+      [
+        :nouse_stdio,
+        :exit_status,
+        :binary,
+        args: [socket_path | cmd_with_args]
+      ] ++ opts
+
+    Port.open({:spawn_executable, @spawner_path}, opts)
+  end
+
+  defp socket_path do
+    dir = System.tmp_dir!()
+    Path.join(dir, randome_string())
+  end
+
+  defp randome_string do
+    :crypto.strong_rand_bytes(16) |> Base.url_encode64() |> binary_part(0, 16)
+  end
+
+  @timeout 2000
+  defp receive_fds(uds) do
+    case :socket.accept(uds, 5000) do
+      {:ok, usock} ->
+        {:ok, msg} = :socket.recvmsg(usock)
+
+        %{
+          ctrl: [
+            %{
+              data: <<read_fd_int::native-32, write_fd_int::native-32, _rest::binary>>,
+              level: :socket,
+              type: :rights
+            }
+          ]
+        } = msg
+
+        :socket.close(usock)
+        {write_fd_int, read_fd_int}
+
+      error ->
+        raise error
+    end
+  end
 end
