@@ -16,7 +16,6 @@ defmodule Exile.Process do
   """
 
   alias Exile.ProcessNif, as: Nif
-  require Exile.ProcessNif
   require Logger
   use GenServer
 
@@ -147,17 +146,17 @@ defmodule Exile.Process do
 
   def handle_call(_, _from, %{status: {:exit, status}}), do: {:reply, {:error, {:exit, status}}}
 
-  # def handle_call({:await_exit, timeout}, from, state) do
-  #   tref =
-  #     if timeout != :infinity do
-  #       Elixir.Process.send_after(self(), {:await_exit_timeout, from}, timeout)
-  #     else
-  #       nil
-  #     end
+  def handle_call({:await_exit, timeout}, from, state) do
+    tref =
+      if timeout != :infinity do
+        Elixir.Process.send_after(self(), {:await_exit_timeout, from}, timeout)
+      else
+        nil
+      end
 
-  #   state = put_timer(state, from, :timeout, tref)
-  #   check_exit(state, from)
-  # end
+    state = put_timer(state, from, :timeout, tref)
+    check_exit(state, from)
+  end
 
   def handle_call({:write, binary}, from, state) when is_binary(binary) do
     pending = %Pending{bin: binary, client_pid: from}
@@ -173,7 +172,7 @@ defmodule Exile.Process do
 
   def handle_call(:os_pid, _from, state), do: {:reply, Nif.os_pid(state.context), state}
 
-  # def handle_info({:check_exit, from}, state), do: check_exit(state, from)
+  def handle_info({:check_exit, from}, state), do: check_exit(state, from)
 
   def handle_info({:await_exit_timeout, from}, state) do
     cancel_timer(state, from, :check)
@@ -192,7 +191,14 @@ defmodule Exile.Process do
 
   def handle_info({:select, _read_resource, _ref, :ready_input}, state), do: do_read(state)
 
+  def handle_info({port, {:exit_status, exit_status}}, %{port: port} = state),
+    do: handle_port_exit(exit_status, state)
+
   def handle_info(msg, _state), do: raise(msg)
+
+  defp handle_port_exit(exit_status, state) do
+    {:noreply, %{state | status: {:exit, exit_status}}}
+  end
 
   defp do_write(%Process{pending_write: %Pending{bin: <<>>}} = state) do
     GenServer.reply(state.pending_write.client_pid, :ok)
@@ -267,29 +273,23 @@ defmodule Exile.Process do
     end
   end
 
-  # defp check_exit(state, from) do
-  #   case Nif.sys_wait(state.context) do
-  #     {:ok, {:exit, Nif.fork_exec_failure()}} ->
-  #       GenServer.reply(from, {:error, :failed_to_execute})
-  #       cancel_timer(state, from, :timeout)
-  #       {:noreply, clear_await(state, from)}
+  defp check_exit(state, from) do
+    case state.status do
+      # {:ok, {:exit, Nif.fork_exec_failure()}} ->
+      #   GenServer.reply(from, {:error, :failed_to_execute})
+      #   cancel_timer(state, from, :timeout)
+      #   {:noreply, clear_await(state, from)}
 
-  #     {:ok, status} ->
-  #       GenServer.reply(from, {:ok, status})
-  #       cancel_timer(state, from, :timeout)
-  #       {:noreply, clear_await(state, from)}
+      {:exit, status} ->
+        GenServer.reply(from, {:ok, {:exit, status}})
+        cancel_timer(state, from, :timeout)
+        {:noreply, clear_await(state, from)}
 
-  #     {:error, {0, _}} ->
-  #       # Ideally we should not poll and we should handle this with SIGCHLD signal
-  #       tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
-  #       {:noreply, put_timer(state, from, :check, tref)}
-
-  #     {:error, {-1, status}} ->
-  #       GenServer.reply(from, {:error, status})
-  #       cancel_timer(state, from, :timeout)
-  #       {:noreply, clear_await(state, from)}
-  #   end
-  # end
+      :start ->
+        tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
+        {:noreply, put_timer(state, from, :check, tref)}
+    end
+  end
 
   defp do_kill(context, :sigkill), do: Nif.sys_kill(context)
 
