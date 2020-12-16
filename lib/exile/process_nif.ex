@@ -7,17 +7,11 @@ defmodule Exile.ProcessNif do
     :erlang.load_nif(nif_path, 0)
   end
 
-  def sys_kill(_context), do: :erlang.nif_error(:nif_library_not_loaded)
+  def nif_is_os_pid_alive(_os_pid), do: :erlang.nif_error(:nif_library_not_loaded)
 
-  def sys_terminate(_context), do: :erlang.nif_error(:nif_library_not_loaded)
+  def nif_kill(_os_pid, _signal), do: :erlang.nif_error(:nif_library_not_loaded)
 
-  def sys_wait(_context), do: :erlang.nif_error(:nif_library_not_loaded)
-
-  def os_pid(_context), do: :erlang.nif_error(:nif_library_not_loaded)
-
-  def alive?(_context), do: :erlang.nif_error(:nif_library_not_loaded)
-
-  def nif_read_async(_fd, _request), do: :erlang.nif_error(:nif_library_not_loaded)
+  def nif_read(_fd, _request), do: :erlang.nif_error(:nif_library_not_loaded)
 
   def nif_create_fd(_fd), do: :erlang.nif_error(:nif_library_not_loaded)
 

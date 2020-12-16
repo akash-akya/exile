@@ -49,11 +49,14 @@ static int send_io_fds(int socket, int read_fd, int write_fd) {
 }
 
 /* This is not ideal, but as of now there is no portable way to do this */
+
+/*
 static void close_all_fds() {
   int fd_limit = (int)sysconf(_SC_OPEN_MAX);
   for (int i = STDERR_FILENO + 1; i < fd_limit; i++)
     close(i);
 }
+*/
 
 static void close_all(int pipes[2][2]) {
   for (int i = 0; i < 2; i++) {
@@ -65,7 +68,6 @@ static void close_all(int pipes[2][2]) {
 }
 
 static int exec_process(char const *bin, char *const *args, int socket) {
-  pid_t pid;
   int pipes[2][2] = {{0, 0}, {0, 0}};
 
   if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1) {

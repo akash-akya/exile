@@ -111,7 +111,6 @@ defmodule Exile.Process do
   def handle_continue(nil, state) do
     %{cmd_with_args: cmd_with_args, cd: cd, env: env} = state.args
     socket_path = socket_path()
-    Exile.Watcher.watch(self(), socket_path)
 
     {:ok, uds} = :socket.open(:local, :stream, :default)
     _ = :file.delete(socket_path)
@@ -119,6 +118,8 @@ defmodule Exile.Process do
     :ok = :socket.listen(uds)
 
     port = exec(cmd_with_args, socket_path, env, cd)
+    {:os_pid, os_pid} = Port.info(port, :os_pid)
+    Exile.Watcher.watch(self(), os_pid, socket_path)
 
     {write_fd_int, read_fd_int} = receive_fds(uds)
 
@@ -141,6 +142,8 @@ defmodule Exile.Process do
 
     # TODO: pending write and read should receive "stopped" return
     # value instead of exit signal
+    Port.close(state.port)
+
     {:stop, :normal, :ok, state}
   end
 
@@ -170,7 +173,20 @@ defmodule Exile.Process do
 
   def handle_call(:close_stdin, _from, state), do: do_close(state, :stdin)
 
-  def handle_call(:os_pid, _from, state), do: {:reply, Nif.os_pid(state.context), state}
+  def handle_call(:os_pid, _from, state) do
+    case Port.info(state.port, :os_pid) do
+      {:os_pid, os_pid} ->
+        {:reply, {:ok, os_pid}, state}
+
+      :undefined ->
+        Logger.debug("Process not alive")
+        {:reply, :undefined, state}
+    end
+  end
+
+  def handle_call({:kill, signal}, _from, state) do
+    {:reply, signal(state.port, signal), state}
+  end
 
   def handle_info({:check_exit, from}, state), do: check_exit(state, from)
 
@@ -226,7 +242,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: %Pending{remaining: :unbuffered} = pending} = state) do
-    case Nif.nif_read_async(state.stdout, -1) do
+    case Nif.nif_read(state.stdout, -1) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, []})
         {:noreply, state}
@@ -245,7 +261,7 @@ defmodule Exile.Process do
   end
 
   defp do_read(%Process{pending_read: pending} = state) do
-    case Nif.nif_read_async(state.stdout, pending.remaining) do
+    case Nif.nif_read(state.stdout, pending.remaining) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, pending.bin})
         {:noreply, %Process{state | pending_read: %Pending{}}}
@@ -290,10 +306,6 @@ defmodule Exile.Process do
         {:noreply, put_timer(state, from, :check, tref)}
     end
   end
-
-  defp do_kill(context, :sigkill), do: Nif.sys_kill(context)
-
-  defp do_kill(context, :sigterm), do: Nif.sys_terminate(context)
 
   defp do_close(state, type) do
     fd =
@@ -432,9 +444,19 @@ defmodule Exile.Process do
     :crypto.strong_rand_bytes(16) |> Base.url_encode64() |> binary_part(0, 16)
   end
 
+  defp signal(port, sig) when sig in [:sigkill, :sigterm] do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} ->
+        Nif.nif_kill(os_pid, sig)
+
+      :undefined ->
+        {:error, :process_not_alive}
+    end
+  end
+
   @timeout 2000
   defp receive_fds(uds) do
-    case :socket.accept(uds, 5000) do
+    case :socket.accept(uds, @timeout) do
       {:ok, usock} ->
         {:ok, msg} = :socket.recvmsg(usock)
 

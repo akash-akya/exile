@@ -63,7 +63,7 @@ defmodule UDS do
   end
 
   defp nif_read(fd) do
-    case Nif.nif_read_async(fd, 65535) do
+    case Nif.nif_read(fd, 65535) do
       {:ok, <<>>} ->
         Nif.nif_close(fd)
         IO.puts("\nEOF")
