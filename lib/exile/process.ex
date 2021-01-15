@@ -341,8 +341,12 @@ defmodule Exile.Process do
     end
   end
 
-  defp normalize_cmd_args(args) do
-    if is_list(args) do
+  defp normalize_cmd(_cmd_with_args) do
+    {:error, "`cmd_with_args` must be a list of strings, Please check the documentation"}
+  end
+
+  defp normalize_cmd_args([_ | args]) do
+    if is_list(args) && Enum.all?(args, &is_binary/1) do
       {:ok, Enum.map(args, &to_charlist/1)}
     else
       {:error, "command arguments must be list of strings. #{inspect(args)}"}
@@ -380,9 +384,9 @@ defmodule Exile.Process do
     end
   end
 
-  defp normalize_args([cmd | args], opts) when is_list(opts) do
-    with {:ok, cmd} <- normalize_cmd(cmd),
-         {:ok, args} <- normalize_cmd_args(args),
+  defp normalize_args(cmd_with_args, opts) do
+    with {:ok, cmd} <- normalize_cmd(cmd_with_args),
+         {:ok, args} <- normalize_cmd_args(cmd_with_args),
          :ok <- validate_opts_fields(opts),
          {:ok, cd} <- normalize_cd(opts[:cd]),
          {:ok, env} <- normalize_env(opts[:env]) do
