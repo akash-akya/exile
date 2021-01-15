@@ -272,8 +272,8 @@ defmodule Exile.Process do
         tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
         {:noreply, put_timer(state, from, :check, tref)}
 
-      {:error, {-1, status}} ->
-        GenServer.reply(from, {:error, status})
+      {:error, {-1, _}} ->
+        GenServer.reply(from, :error)
         cancel_timer(state, from, :timeout)
         {:noreply, clear_await(state, from)}
     end
@@ -316,7 +316,7 @@ defmodule Exile.Process do
 
   defp get_timer(state, from, key), do: get_in(state.await, [from, key])
 
-  defp normalize_cmd(cmd) do
+  defp normalize_cmd([cmd | _]) when is_binary(cmd) do
     path = System.find_executable(cmd)
 
     if path do
@@ -326,8 +326,12 @@ defmodule Exile.Process do
     end
   end
 
-  defp normalize_cmd_args(args) do
-    if is_list(args) do
+  defp normalize_cmd(_cmd_with_args) do
+    {:error, "`cmd_with_args` must be a list of strings, Please check the documentation"}
+  end
+
+  defp normalize_cmd_args([_ | args]) do
+    if is_list(args) && Enum.all?(args, &is_binary/1) do
       {:ok, Enum.map(args, &to_charlist/1)}
     else
       {:error, "command arguments must be list of strings. #{inspect(args)}"}
@@ -379,9 +383,9 @@ defmodule Exile.Process do
     end
   end
 
-  defp normalize_args([cmd | args], opts) when is_list(opts) do
-    with {:ok, cmd} <- normalize_cmd(cmd),
-         {:ok, args} <- normalize_cmd_args(args),
+  defp normalize_args(cmd_with_args, opts) do
+    with {:ok, cmd} <- normalize_cmd(cmd_with_args),
+         {:ok, args} <- normalize_cmd_args(cmd_with_args),
          :ok <- validate_opts_fields(opts),
          {:ok, cd} <- normalize_cd(opts[:cd]),
          {:ok, stderr_to_console} <- normalize_stderr_to_console(opts[:stderr_to_console]),
@@ -390,6 +394,4 @@ defmodule Exile.Process do
        %{cmd_with_args: [cmd | args], cd: cd, stderr_to_console: stderr_to_console, env: env}}
     end
   end
-
-  defp normalize_args(_, _), do: {:error, "invalid arguments"}
 end

@@ -54,9 +54,6 @@ static const int PIPE_READ = 0;
 static const int PIPE_WRITE = 1;
 static const int PIPE_CLOSED = -1;
 static const int CMD_EXIT = -1;
-static const int MAX_ARGUMENTS = 50;
-static const int MAX_ARGUMENT_LEN = 1024;
-static const int MAX_ENV_VAR_LEN = 1024;
 static const int UNBUFFERED_READ = -1;
 static const int PIPE_BUF_SIZE = 65535;
 
@@ -150,6 +147,84 @@ static void io_resource_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
 static ErlNifResourceTypeInit io_rt_init = {io_resource_dtor, io_resource_stop,
                                             io_resource_down};
 
+static void free_array_of_cstr(char ***arr) {
+  int i;
+
+  if (*arr) {
+    for(i=0; (*arr)[i] != NULL; i++) {
+      free((*arr)[i]);
+      (*arr)[i] = NULL;
+    }
+
+    free(*arr);
+  }
+  *arr = NULL;
+}
+
+static bool read_string(ErlNifEnv *env, ERL_NIF_TERM term, char **str) {
+  unsigned int length;
+  *str = NULL;
+
+  if (enif_get_list_length(env, term, &length) != true) {
+    error("failed to get string length");
+    return false;
+  }
+
+  *str = (char *)malloc((length + 1) * sizeof(char));
+
+  if (enif_get_string(env, term, *str, length + 1, ERL_NIF_LATIN1) < 1) {
+    error("failed to get string");
+
+    free(str);
+    *str = NULL;
+
+    return false;
+  }
+
+  return true;
+}
+
+static bool erl_list_to_array_of_cstr(ErlNifEnv *env, ERL_NIF_TERM list,
+                                      char ***arr) {
+  ERL_NIF_TERM head, tail;
+  unsigned int length, i;
+
+  *arr = NULL;
+
+  if (enif_is_list(env, list) != true) {
+    error("erl term is not a list");
+    goto error;
+  }
+
+  if (enif_get_list_length(env, list, &length) != true) {
+    error("erl term is not a proper list");
+    goto error;
+  }
+
+  *arr = (char **)malloc((length + 1) * sizeof(char *));
+
+  for (i = 0; i < length + 1; i++)
+    (*arr)[i] = NULL;
+
+  tail = list;
+
+  for (i = 0; i < length; i++) {
+    if (enif_get_list_cell(env, tail, &head, &tail) != true) {
+      error("failed to get cell from list");
+      goto error;
+    }
+
+    if (read_string(env, head, &(*arr)[i]) != true)
+      goto error;
+  }
+
+  return true;
+
+error:
+  free_array_of_cstr(arr);
+  return false;
+}
+
 static inline ERL_NIF_TERM make_ok(ErlNifEnv *env, ERL_NIF_TERM term) {
   return enif_make_tuple2(env, ATOM_OK, term);
 }
@@ -191,10 +266,8 @@ static void close_all_fds() {
     close(i);
 }
 
-static StartProcessResult start_process(char *const args[],
-                                        bool stderr_to_console,
-                                        const char dir[],
-                                        char *const exec_env[]) {
+static StartProcessResult start_process(char **args, bool stderr_to_console,
+                                        char *dir, char *const exec_env[]) {
   StartProcessResult result = {.success = false};
   pid_t pid;
   int pipes[2][2] = {{0, 0}, {0, 0}};
@@ -297,77 +370,55 @@ static StartProcessResult start_process(char *const args[],
 /* TODO: return appropriate error instead returning generic "badarg" error */
 static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
                             const ERL_NIF_TERM argv[]) {
-  char dir[1024] = {'\0'};
   ErlNifTime start;
-  unsigned int args_len, env_len;
-  ERL_NIF_TERM head, tail, list;
+  int stderr_to_console_int;
+  ERL_NIF_TERM term;
+  char **exec_args, **exec_env;
+  char *dir;
+  bool stderr_to_console = true;
+  struct ExilePriv *data;
+  StartProcessResult result;
+  ExecContext *ctx = NULL;
+
+  exec_args = NULL;
+  exec_env = NULL;
+  dir = NULL;
 
   start = enif_monotonic_time(ERL_NIF_USEC);
 
-  if (enif_get_list_length(env, argv[0], &args_len) != true) {
-    error("invalid command with arguments param");
-    return enif_make_badarg(env);
+  if (argc != 4) {
+    error("number of arguments for `execute` must be 4");
+    term = enif_make_badarg(env);
+    goto exit;
   }
 
-  if (args_len > MAX_ARGUMENTS) {
-    error("command argument size exceeds limit: %d", MAX_ARGUMENTS);
-    return enif_make_badarg(env);
+  if (erl_list_to_array_of_cstr(env, argv[0], &exec_args) != true) {
+    error("failed to read command arguments");
+    term = enif_make_badarg(env);
+    goto exit;
   }
 
-  char _args_temp[args_len][MAX_ARGUMENT_LEN + 1];
-  char *exec_args[args_len + 1];
-
-  list = argv[0];
-  for (unsigned int i = 0; i < args_len; i++) {
-    if (enif_get_list_cell(env, list, &head, &tail) != true)
-      return enif_make_badarg(env);
-
-    if (enif_get_string(env, head, _args_temp[i], MAX_ARGUMENT_LEN,
-                        ERL_NIF_LATIN1) < 1)
-      return enif_make_badarg(env);
-    exec_args[i] = _args_temp[i];
-    list = tail;
-  }
-  exec_args[args_len] = NULL;
-
-  if (enif_get_list_length(env, argv[1], &env_len) != true) {
-    error("invalid env param");
-    return enif_make_badarg(env);
+  if (erl_list_to_array_of_cstr(env, argv[1], &exec_env) != true) {
+    error("failed to read env list");
+    term = enif_make_badarg(env);
+    goto exit;
   }
 
-  debug("env size: %d", env_len);
-
-  char _env_temp[env_len][MAX_ENV_VAR_LEN];
-  char *exec_env[env_len + 1];
-
-  list = argv[1];
-  for (unsigned int i = 0; i < env_len; i++) {
-    if (enif_get_list_cell(env, list, &head, &tail) != true)
-      return enif_make_badarg(env);
-
-    if (enif_get_string(env, head, _env_temp[i], MAX_ENV_VAR_LEN, ERL_NIF_LATIN1) <
-        1)
-      return enif_make_badarg(env);
-    exec_env[i] = _env_temp[i];
-    list = tail;
-  }
-  exec_env[env_len] = NULL;
-
-  bool stderr_to_console = true;
-  int tmp_int;
-  if (enif_get_int(env, argv[3], &tmp_int) != true)
-    return enif_make_badarg(env);
-  stderr_to_console = tmp_int == 1 ? true : false;
-
-  if (enif_get_string(env, argv[2], dir, 1024, ERL_NIF_LATIN1) < 0) {
-    return enif_make_badarg(env);
+  if (read_string(env, argv[2], &dir) != true) {
+    error("failed to get `dir`");
+    term = enif_make_badarg(env);
+    goto exit;
   }
 
-  struct ExilePriv *data = enif_priv_data(env);
-  StartProcessResult result =
-      start_process(exec_args, stderr_to_console, dir, exec_env);
-  ExecContext *ctx = NULL;
-  ERL_NIF_TERM term;
+  if (enif_get_int(env, argv[3], &stderr_to_console_int) != true) {
+    error("failed to read stderr_to_console int");
+    term = enif_make_badarg(env);
+    goto exit;
+  }
+  stderr_to_console = stderr_to_console_int == 1 ? true : false;
+
+  data = enif_priv_data(env);
+  result = start_process(exec_args, stderr_to_console, dir, exec_env);
 
   if (result.success) {
     ctx = enif_alloc_resource(data->exec_ctx_rt, sizeof(ExecContext));
@@ -387,10 +438,19 @@ static ERL_NIF_TERM execute(ErlNifEnv *env, int argc,
 
     notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
-    return make_ok(env, term);
+    term = make_ok(env, term);
   } else {
-    return make_error(env, enif_make_int(env, result.err));
+    term = make_error(env, enif_make_int(env, result.err));
   }
+
+exit:
+  free_array_of_cstr(&exec_args);
+  free_array_of_cstr(&exec_env);
+
+  if (dir)
+    free(dir);
+
+  return term;
 }
 
 static int select_write(ErlNifEnv *env, ExecContext *ctx) {
@@ -629,7 +689,7 @@ static ERL_NIF_TERM sys_wait(ErlNifEnv *env, int argc,
   if (ctx->pid == CMD_EXIT)
     return make_exit_term(env, ctx);
 
-  int status;
+  int status = 0;
   int wpid = waitpid(ctx->pid, &status, WNOHANG);
 
   if (wpid == ctx->pid) {
