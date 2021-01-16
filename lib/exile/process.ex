@@ -19,6 +19,12 @@ defmodule Exile.Process do
   require Logger
   use GenServer
 
+  defmodule Error do
+    defexception [:message]
+  end
+
+  alias Exile.Process.Error
+
   @default_opts [env: []]
 
   @doc """
@@ -111,19 +117,13 @@ defmodule Exile.Process do
     %{cmd_with_args: cmd_with_args, cd: cd, env: env} = state.args
     socket_path = socket_path()
 
-    {:ok, uds} = :socket.open(:local, :stream, :default)
-    _ = :file.delete(socket_path)
-    {:ok, _} = :socket.bind(uds, %{family: :local, path: socket_path})
-    :ok = :socket.listen(uds)
+    uds = create_unix_domain_socket!(socket_path)
 
     port = exec(cmd_with_args, socket_path, env, cd)
     {:os_pid, os_pid} = Port.info(port, :os_pid)
     Exile.Watcher.watch(self(), os_pid, socket_path)
 
-    {write_fd_int, read_fd_int} = receive_fds(uds)
-
-    {:ok, write_fd} = Nif.nif_create_fd(write_fd_int)
-    {:ok, read_fd} = Nif.nif_create_fd(read_fd_int)
+    {write_fd, read_fd} = receive_file_descriptors!(uds)
 
     {:noreply,
      %Process{
@@ -411,12 +411,10 @@ defmodule Exile.Process do
   end
 
   defp socket_path do
-    dir = System.tmp_dir!()
-    Path.join(dir, random_string())
-  end
-
-  defp random_string do
-    :crypto.strong_rand_bytes(16) |> Base.url_encode64() |> binary_part(0, 16)
+    str = :crypto.strong_rand_bytes(16) |> Base.url_encode64() |> binary_part(0, 16)
+    path = Path.join(System.tmp_dir!(), str)
+    _ = :file.delete(path)
+    path
   end
 
   defp signal(port, sig) when sig in [:sigkill, :sigterm] do
@@ -426,27 +424,42 @@ defmodule Exile.Process do
     end
   end
 
+  defp create_unix_domain_socket!(socket_path) do
+    {:ok, uds} = :socket.open(:local, :stream, :default)
+    {:ok, _} = :socket.bind(uds, %{family: :local, path: socket_path})
+    :ok = :socket.listen(uds)
+    uds
+  end
+
   @socket_timeout 2000
-  defp receive_fds(uds) do
-    case :socket.accept(uds, @socket_timeout) do
-      {:ok, usock} ->
-        {:ok, msg} = :socket.recvmsg(usock)
+  defp receive_file_descriptors!(uds) do
+    with {:ok, sock} <- :socket.accept(uds, @socket_timeout),
+         {:ok, msg} <- :socket.recvmsg(sock) do
+      %{
+        ctrl: [
+          %{
+            data: <<read_fd_int::native-32, write_fd_int::native-32, _rest::binary>>,
+            level: :socket,
+            type: :rights
+          }
+        ]
+      } = msg
 
-        %{
-          ctrl: [
-            %{
-              data: <<read_fd_int::native-32, write_fd_int::native-32, _rest::binary>>,
-              level: :socket,
-              type: :rights
-            }
-          ]
-        } = msg
+      :socket.close(sock)
 
-        :socket.close(usock)
-        {write_fd_int, read_fd_int}
-
+      with {:ok, write_fd} <- Nif.nif_create_fd(write_fd_int),
+           {:ok, read_fd} <- Nif.nif_create_fd(read_fd_int) do
+        {write_fd, read_fd}
+      else
+        error ->
+          raise Error,
+            message: "Failed to create fd resources\n  error: #{inspect(error)}"
+      end
+    else
       error ->
-        raise error
+        raise Error,
+          message:
+            "Failed to receive stdin and stdout file descriptors\n  error: #{inspect(error)}"
     end
   end
 end
