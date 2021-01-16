@@ -87,8 +87,8 @@ defmodule Exile.ProcessTest do
   end
 
   test "exit status" do
-    {:ok, s} = Process.start_link(~w(sh -c "exit 2"))
-    assert {:ok, {:exit, 2}} == Process.await_exit(s, 500)
+    {:ok, s} = Process.start_link(["sh", "-c", "exit 10"])
+    assert {:ok, {:exit, 10}} == Process.await_exit(s, 500)
     Process.stop(s)
   end
 
