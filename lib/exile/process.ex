@@ -19,9 +19,6 @@ defmodule Exile.Process do
   require Logger
   use GenServer
 
-  # delay between exit_check when io is busy (in milliseconds)
-  @exit_check_timeout 5
-
   @default_opts [env: []]
 
   @doc """
@@ -157,7 +154,11 @@ defmodule Exile.Process do
     end
   end
 
-  def handle_call({:await_exit, timeout}, from, state) do
+  def handle_call({:await_exit, _}, _from, %{status: {:exit, status}} = state) do
+    {:reply, {:ok, {:exit, status}}, state}
+  end
+
+  def handle_call({:await_exit, timeout}, from, %{status: :start} = state) do
     tref =
       if timeout != :infinity do
         Elixir.Process.send_after(self(), {:await_exit_timeout, from}, timeout)
@@ -165,8 +166,7 @@ defmodule Exile.Process do
         nil
       end
 
-    state = put_timer(state, from, :timeout, tref)
-    check_exit(state, from)
+    {:noreply, put_timer(state, from, :timeout, tref)}
   end
 
   def handle_call(_, _from, %{status: {:exit, status}} = state),
@@ -197,17 +197,7 @@ defmodule Exile.Process do
     {:reply, signal(state.port, signal), state}
   end
 
-  def handle_info({:check_exit, from}, state), do: check_exit(state, from)
-
   def handle_info({:await_exit_timeout, from}, state) do
-    cancel_timer(state, from, :check)
-
-    receive do
-      {:check_exit, ^from} -> :ok
-    after
-      0 -> :ok
-    end
-
     GenServer.reply(from, :timeout)
     {:noreply, clear_await(state, from)}
   end
@@ -221,7 +211,14 @@ defmodule Exile.Process do
 
   def handle_info(msg, _state), do: raise(msg)
 
-  defp handle_port_exit(exit_status, state) do
+  defp handle_port_exit(exit_status, %{await: await} = state) do
+    state =
+      Enum.reduce(await, state, fn {from, _}, state ->
+        GenServer.reply(from, {:ok, {:exit, exit_status}})
+        cancel_timer(state, from, :timeout)
+        clear_await(state, from)
+      end)
+
     {:noreply, %{state | status: {:exit, exit_status}}}
   end
 
@@ -295,24 +292,6 @@ defmodule Exile.Process do
       {:error, errno} ->
         GenServer.reply(pending.client_pid, {:error, errno})
         {:noreply, %{state | pending_read: %Pending{}, errno: errno}}
-    end
-  end
-
-  defp check_exit(state, from) do
-    case state.status do
-      # {:ok, {:exit, Nif.fork_exec_failure()}} ->
-      #   GenServer.reply(from, {:error, :failed_to_execute})
-      #   cancel_timer(state, from, :timeout)
-      #   {:noreply, clear_await(state, from)}
-
-      {:exit, status} ->
-        GenServer.reply(from, {:ok, {:exit, status}})
-        cancel_timer(state, from, :timeout)
-        {:noreply, clear_await(state, from)}
-
-      :start ->
-        tref = Elixir.Process.send_after(self(), {:check_exit, from}, @exit_check_timeout)
-        {:noreply, put_timer(state, from, :check, tref)}
     end
   end
 
@@ -437,10 +416,10 @@ defmodule Exile.Process do
 
   defp socket_path do
     dir = System.tmp_dir!()
-    Path.join(dir, randome_string())
+    Path.join(dir, random_string())
   end
 
-  defp randome_string do
+  defp random_string do
     :crypto.strong_rand_bytes(16) |> Base.url_encode64() |> binary_part(0, 16)
   end
 
@@ -454,9 +433,9 @@ defmodule Exile.Process do
     end
   end
 
-  @timeout 2000
+  @socket_timeout 2000
   defp receive_fds(uds) do
-    case :socket.accept(uds, @timeout) do
+    case :socket.accept(uds, @socket_timeout) do
       {:ok, usock} ->
         {:ok, msg} = :socket.recvmsg(usock)
 
