@@ -142,12 +142,20 @@ defmodule Exile.Process do
 
     # TODO: pending write and read should receive "stopped" return
     # value instead of exit signal
-    Port.close(state.port)
+    case state.status do
+      {:exit, _} -> :ok
+      _ -> Port.close(state.port)
+    end
 
     {:stop, :normal, :ok, state}
   end
 
-  def handle_call(_, _from, %{status: {:exit, status}}), do: {:reply, {:error, {:exit, status}}}
+  def handle_call(:close_stdin, _from, state) do
+    case state.status do
+      {:exit, _} -> {:reply, :ok, state}
+      _ -> do_close(state, :stdin)
+    end
+  end
 
   def handle_call({:await_exit, timeout}, from, state) do
     tref =
@@ -161,6 +169,9 @@ defmodule Exile.Process do
     check_exit(state, from)
   end
 
+  def handle_call(_, _from, %{status: {:exit, status}} = state),
+    do: {:reply, {:error, {:exit, status}}, state}
+
   def handle_call({:write, binary}, from, state) when is_binary(binary) do
     pending = %Pending{bin: binary, client_pid: from}
     do_write(%Process{state | pending_write: pending})
@@ -170,8 +181,6 @@ defmodule Exile.Process do
     pending = %Pending{remaining: size, client_pid: from}
     do_read(%Process{state | pending_read: pending})
   end
-
-  def handle_call(:close_stdin, _from, state), do: do_close(state, :stdin)
 
   def handle_call(:os_pid, _from, state) do
     case Port.info(state.port, :os_pid) do
