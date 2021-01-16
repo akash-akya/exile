@@ -387,20 +387,12 @@ defmodule Exile.Process do
   defp normalize_env(nil), do: {:ok, []}
 
   defp normalize_env(env) do
-    user_env =
-      Map.new(env, fn {key, value} ->
-        {String.trim(key), String.trim(value)}
+    env =
+      Enum.map(env, fn {key, value} ->
+        {to_charlist(key), to_charlist(value)}
       end)
 
-    # spawned process env will be beam env at that time + user env.
-    # this is similar to erlang behavior
-    env_list =
-      Map.merge(System.get_env(), user_env)
-      |> Enum.map(fn {k, v} ->
-        to_charlist(k <> "=" <> v)
-      end)
-
-    {:ok, env_list}
+    {:ok, env}
   end
 
   defp validate_opts_fields(opts) do
@@ -429,9 +421,8 @@ defmodule Exile.Process do
 
   defp exec(cmd_with_args, socket_path, env, cd) do
     opts = []
-
-    # opts = if cd, do: [cd: cd], else: []
-    # opts = if env, do: [{:env, env} | opts], else: opts
+    opts = if cd, do: [{:cd, cd} | opts], else: []
+    opts = if env, do: [{:env, env} | opts], else: opts
 
     opts =
       [
