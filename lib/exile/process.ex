@@ -106,6 +106,8 @@ defmodule Exile.Process do
   end
 
   def handle_continue(nil, state) do
+    Elixir.Process.flag(:trap_exit, true)
+
     %{cmd_with_args: cmd_with_args, cd: cd, env: env} = state.args
     socket_path = socket_path()
 
@@ -164,11 +166,12 @@ defmodule Exile.Process do
         nil
       end
 
-    {:noreply, put_timer(state, from, :timeout, tref)}
+    {:noreply, %Process{state | await: Map.put(state.await, from, tref)}}
   end
 
-  def handle_call(_, _from, %{status: {:exit, status}} = state),
-    do: {:reply, {:error, {:exit, status}}, state}
+  def handle_call(_, _from, %{status: {:exit, status}} = state) do
+    {:reply, {:error, {:exit, status}}, state}
+  end
 
   def handle_call({:write, binary}, from, state) do
     cond do
@@ -210,7 +213,7 @@ defmodule Exile.Process do
 
   def handle_info({:await_exit_timeout, from}, state) do
     GenServer.reply(from, :timeout)
-    {:noreply, clear_await(state, from)}
+    {:noreply, %Process{state | await: Map.delete(state.await, from)}}
   end
 
   def handle_info({:select, _write_resource, _ref, :ready_output}, state), do: do_write(state)
@@ -220,11 +223,20 @@ defmodule Exile.Process do
   def handle_info({port, {:exit_status, exit_status}}, %{port: port} = state),
     do: handle_port_exit(exit_status, state)
 
-  def handle_info(msg, _state), do: raise(msg)
+  def handle_info({:EXIT, port, :normal}, %{port: port} = state), do: {:noreply, state}
+
+  def handle_info({:EXIT, _, reason}, state), do: {:stop, reason, state}
 
   defp handle_port_exit(exit_status, state) do
-    handle_porcess_exit(exit_status, state)
-    {:noreply, %{state | status: {:exit, exit_status}}}
+    Enum.each(state.await, fn {from, tref} ->
+      GenServer.reply(from, {:ok, {:exit, exit_status}})
+
+      if tref do
+        Elixir.Process.cancel_timer(tref)
+      end
+    end)
+
+    {:noreply, %Process{state | status: {:exit, exit_status}}, await: %{}}
   end
 
   defp do_write(%Process{pending_write: %Pending{bin: <<>>}} = state) do
@@ -317,36 +329,6 @@ defmodule Exile.Process do
         raise errno
         {:reply, {:error, errno}, %Process{state | errno: errno}}
     end
-  end
-
-  defp clear_await(state, from) do
-    %Process{state | await: Map.delete(state.await, from)}
-  end
-
-  defp cancel_timer(state, from, key) do
-    case get_timer(state, from, key) do
-      nil -> :ok
-      tref -> Elixir.Process.cancel_timer(tref)
-    end
-  end
-
-  defp put_timer(state, from, key, timer) do
-    if Map.has_key?(state.await, from) do
-      await = put_in(state.await, [from, key], timer)
-      %Process{state | await: await}
-    else
-      %Process{state | await: %{from => %{key => timer}}}
-    end
-  end
-
-  defp get_timer(state, from, key), do: get_in(state.await, [from, key])
-
-  defp handle_porcess_exit(exit_status, state) do
-    Enum.reduce(state.await, state, fn {from, _}, state ->
-      GenServer.reply(from, {:ok, {:exit, exit_status}})
-      cancel_timer(state, from, :timeout)
-      clear_await(state, from)
-    end)
   end
 
   defp normalize_cmd(cmd) do

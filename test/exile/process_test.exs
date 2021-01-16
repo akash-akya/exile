@@ -211,6 +211,21 @@ defmodule Exile.ProcessTest do
     assert {:normal, _} = Task.await(task)
   end
 
+  test "concurrent read" do
+    {:ok, s} = Process.start_link(~w(cat))
+
+    task = Task.async(fn -> Process.read(s, 1) end)
+
+    # delaying concurrent read to avoid race-condition
+    Elixir.Process.sleep(100)
+    assert {:error, :pending_read} = Process.read(s, 1)
+
+    assert :ok == Process.close_stdin(s)
+    assert {:ok, {:exit, 0}} == Process.await_exit(s, 100)
+    Process.stop(s)
+    _ = Task.await(task)
+  end
+
   test "cd" do
     parent = Path.expand("..", File.cwd!())
     {:ok, s} = Process.start_link(~w(sh -c pwd), cd: parent)
@@ -254,6 +269,25 @@ defmodule Exile.ProcessTest do
 
     assert {:ok, "overridden\n"} = Process.read(s)
     assert {:ok, {:exit, 0}} = Process.await_exit(s)
+    Process.stop(s)
+  end
+
+  test "await_exit when process is stopped" do
+    assert {:ok, s} = Process.start_link(~w(cat))
+
+    tasks =
+      Enum.map(1..10, fn _ ->
+        Task.async(fn -> Process.await_exit(s) end)
+      end)
+
+    assert :ok == Process.close_stdin(s)
+
+    Elixir.Process.sleep(100)
+
+    Enum.each(tasks, fn task ->
+      assert {:ok, {:exit, 0}} = Task.await(task)
+    end)
+
     Process.stop(s)
   end
 
