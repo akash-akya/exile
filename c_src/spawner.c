@@ -1,4 +1,9 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,6 +11,23 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifndef CMSG_LEN
+socklen_t CMSG_LEN(size_t len) {
+  return (CMSG_DATA((struct cmsghdr *)NULL) - (unsigned char *)NULL) + len;
+}
+#endif
+
+#ifndef CMSG_SPACE
+socklen_t CMSG_SPACE(size_t len) {
+  struct msghdr msg;
+  struct cmsghdr cmsg;
+  msg.msg_control = &cmsg;
+  msg.msg_controllen = ~0; /* To maximize the chance that CMSG_NXTHDR won't return NULL */
+  cmsg.cmsg_len = CMSG_LEN(len);
+  return (unsigned char *)CMSG_NXTHDR(&msg, &cmsg) - (unsigned char *)&cmsg;
+}
+#endif
 
 // #define DEBUG
 
