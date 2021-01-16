@@ -170,14 +170,27 @@ defmodule Exile.Process do
   def handle_call(_, _from, %{status: {:exit, status}} = state),
     do: {:reply, {:error, {:exit, status}}, state}
 
-  def handle_call({:write, binary}, from, state) when is_binary(binary) do
-    pending = %Pending{bin: binary, client_pid: from}
-    do_write(%Process{state | pending_write: pending})
+  def handle_call({:write, binary}, from, state) do
+    cond do
+      !is_binary(binary) ->
+        {:reply, {:error, :not_binary}, state}
+
+      state.pending_write.client_pid ->
+        {:reply, {:error, :pending_write}, state}
+
+      true ->
+        pending = %Pending{bin: binary, client_pid: from}
+        do_write(%Process{state | pending_write: pending})
+    end
   end
 
   def handle_call({:read, size}, from, state) do
-    pending = %Pending{remaining: size, client_pid: from}
-    do_read(%Process{state | pending_read: pending})
+    if state.pending_read.client_pid do
+      {:reply, {:error, :pending_read}, state}
+    else
+      pending = %Pending{remaining: size, client_pid: from}
+      do_read(%Process{state | pending_read: pending})
+    end
   end
 
   def handle_call(:os_pid, _from, state) do
@@ -209,14 +222,8 @@ defmodule Exile.Process do
 
   def handle_info(msg, _state), do: raise(msg)
 
-  defp handle_port_exit(exit_status, %{await: await} = state) do
-    state =
-      Enum.reduce(await, state, fn {from, _}, state ->
-        GenServer.reply(from, {:ok, {:exit, exit_status}})
-        cancel_timer(state, from, :timeout)
-        clear_await(state, from)
-      end)
-
+  defp handle_port_exit(exit_status, state) do
+    handle_porcess_exit(exit_status, state)
     {:noreply, %{state | status: {:exit, exit_status}}}
   end
 
@@ -249,18 +256,18 @@ defmodule Exile.Process do
     case Nif.nif_read(state.stdout, -1) do
       {:ok, <<>>} ->
         GenServer.reply(pending.client_pid, {:eof, []})
-        {:noreply, state}
+        {:noreply, %Process{state | pending_read: %Pending{}}}
 
       {:ok, binary} ->
         GenServer.reply(pending.client_pid, {:ok, binary})
-        {:noreply, state}
+        {:noreply, %Process{state | pending_read: %Pending{}}}
 
       {:error, :eagain} ->
         {:noreply, state}
 
       {:error, errno} ->
         GenServer.reply(pending.client_pid, {:error, errno})
-        {:noreply, %{state | errno: errno}}
+        {:noreply, %Process{state | pending_read: %Pending{}, errno: errno}}
     end
   end
 
@@ -333,6 +340,14 @@ defmodule Exile.Process do
   end
 
   defp get_timer(state, from, key), do: get_in(state.await, [from, key])
+
+  defp handle_porcess_exit(exit_status, state) do
+    Enum.reduce(state.await, state, fn {from, _}, state ->
+      GenServer.reply(from, {:ok, {:exit, exit_status}})
+      cancel_timer(state, from, :timeout)
+      clear_await(state, from)
+    end)
+  end
 
   defp normalize_cmd(cmd) do
     path = System.find_executable(cmd)
