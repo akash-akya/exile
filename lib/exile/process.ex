@@ -416,7 +416,7 @@ defmodule Exile.Process do
 
   defp normalize_args(_, _), do: {:error, "invalid arguments"}
 
-  @spawner_path Path.expand("../../c_src/spawner", __DIR__) |> to_charlist()
+  @spawner_path :filename.join(:code.priv_dir(:exile), "spawner")
 
   defp exec(cmd_with_args, socket_path, env, cd) do
     opts = []

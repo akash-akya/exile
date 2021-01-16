@@ -14,11 +14,15 @@ ifeq ($(UNAME), Linux)
 endif
 
 
-all: priv/exile.so
+all: priv/exile.so priv/spawner
 
 priv/exile.so: c_src/exile.c
 	mkdir -p priv
 	$(CC) -I$(ERL_INTERFACE_INCLUDE_DIR) $(TARGET_CFLAGS) $(CFLAGS) c_src/exile.c -o priv/exile.so
 
+priv/spawner: c_src/spawner.c
+	mkdir -p priv
+	$(CC) $(CFLAGS) c_src/spawner.c -o priv/spawner
+
 clean:
-	@rm -rf priv/exile.so
+	@rm -rf priv/exile.so priv/spawner
