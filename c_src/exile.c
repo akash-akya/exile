@@ -58,19 +58,10 @@ static ERL_NIF_TERM ATOM_OK;
 static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_INVALID_FD;
-static ERL_NIF_TERM ATOM_PIPE_CLOSED;
 static ERL_NIF_TERM ATOM_EAGAIN;
-static ERL_NIF_TERM ATOM_ALLOC_FAILED;
 
 static ERL_NIF_TERM ATOM_SIGKILL;
 static ERL_NIF_TERM ATOM_SIGTERM;
-
-/* command exit types */
-static ERL_NIF_TERM ATOM_EXIT;
-static ERL_NIF_TERM ATOM_SIGNALED;
-static ERL_NIF_TERM ATOM_STOPPED;
-
-enum exit_type { NORMAL_EXIT, SIGNALED, STOPPED };
 
 static void close_fd(int *fd) {
   if (*fd != FD_CLOSED) {
@@ -330,27 +321,6 @@ static ERL_NIF_TERM nif_kill(ErlNifEnv *env, int argc,
   return ATOM_OK;
 }
 
-/* static ERL_NIF_TERM make_exit_term(ErlNifEnv *env, ExecContext *ctx) { */
-/*   switch (ctx->exit_type) { */
-/*   case NORMAL_EXIT: */
-/*     return make_ok(env, enif_make_tuple2(env, ATOM_EXIT, */
-/*                                          enif_make_int(env,
- * ctx->exit_status))); */
-/*   case SIGNALED: */
-/*     /\* exit_status here points to signal number *\/ */
-/*     return make_ok(env, enif_make_tuple2(env, ATOM_SIGNALED, */
-/*                                          enif_make_int(env,
- * ctx->exit_status))); */
-/*   case STOPPED: */
-/*     return make_ok(env, enif_make_tuple2(env, ATOM_STOPPED, */
-/*                                          enif_make_int(env,
- * ctx->exit_status))); */
-/*   default: */
-/*     error("Invalid wait status"); */
-/*     return make_error(env, ATOM_UNDEFINED); */
-/*   } */
-/* } */
-
 static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   FD_RT =
       enif_open_resource_type_x(env, "exile_resource", &io_rt_init,
@@ -362,12 +332,7 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   ATOM_ERROR = enif_make_atom(env, "error");
   ATOM_UNDEFINED = enif_make_atom(env, "undefined");
   ATOM_INVALID_FD = enif_make_atom(env, "invalid_fd_resource");
-  ATOM_PIPE_CLOSED = enif_make_atom(env, "closed_pipe");
-  ATOM_EXIT = enif_make_atom(env, "exit");
-  ATOM_SIGNALED = enif_make_atom(env, "signaled");
-  ATOM_STOPPED = enif_make_atom(env, "stopped");
   ATOM_EAGAIN = enif_make_atom(env, "eagain");
-  ATOM_ALLOC_FAILED = enif_make_atom(env, "alloc_failed");
 
   ATOM_SIGTERM = enif_make_atom(env, "sigterm");
   ATOM_SIGKILL = enif_make_atom(env, "sigkill");

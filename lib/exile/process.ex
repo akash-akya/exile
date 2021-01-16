@@ -135,8 +135,6 @@ defmodule Exile.Process do
   end
 
   def handle_call(:stop, _from, state) do
-    # watcher will take care of termination of external process
-
     # TODO: pending write and read should receive "stopped" return
     # value instead of exit signal
     case state.status do
@@ -308,6 +306,7 @@ defmodule Exile.Process do
         {:reply, :ok, state}
 
       {:error, errno} ->
+        # FIXME: correct
         raise errno
         {:reply, {:error, errno}, %Process{state | errno: errno}}
     end
@@ -425,11 +424,8 @@ defmodule Exile.Process do
 
   defp signal(port, sig) when sig in [:sigkill, :sigterm] do
     case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} ->
-        Nif.nif_kill(os_pid, sig)
-
-      :undefined ->
-        {:error, :process_not_alive}
+      {:os_pid, os_pid} -> Nif.nif_kill(os_pid, sig)
+      :undefined -> {:error, :process_not_alive}
     end
   end
 

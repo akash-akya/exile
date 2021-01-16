@@ -42,11 +42,6 @@ defmodule Exile.Watcher do
     {:stop, reason, nil}
   end
 
-  # for proper process exit parent of the child *must* wait() for
-  # child processes termination exit and "pickup" after the exit
-  # (receive child exit_status). Resources acquired by child such as
-  # file descriptors won't be released even if the child process
-  # itself is terminated.
   defp attempt_graceful_exit(os_pid) do
     try do
       Logger.debug(fn -> "Stopping external program" end)
@@ -62,7 +57,7 @@ defmodule Exile.Watcher do
       Nif.nif_kill(os_pid, :sigkill)
       process_exit?(os_pid, 1000) && throw(:done)
 
-      Logger.error("[exile] failed to kill external process")
+      Logger.error("failed to kill external process")
       raise "Failed to kill external process"
     catch
       :done -> Logger.debug(fn -> "External program exited successfully" end)
