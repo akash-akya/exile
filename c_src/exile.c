@@ -19,27 +19,33 @@
 #define USE_DIRTY_IO 0
 #endif
 
-//#define DEBUG
+// #define DEBUG
 
 #ifdef DEBUG
 #define debug(...)                                                             \
   do {                                                                         \
+    enif_fprintf(stderr, "%s:%d\t(fn \"%s\")  - ", __FILE__, __LINE__,         \
+                 __func__);                                                    \
     enif_fprintf(stderr, __VA_ARGS__);                                         \
     enif_fprintf(stderr, "\n");                                                \
   } while (0)
-#define start_timing() ErlNifTime __start = enif_monotonic_time(ERL_NIF_USEC)
-#define elapsed_microseconds() (enif_monotonic_time(ERL_NIF_USEC) - __start)
 #else
 #define debug(...)
-#define start_timing()
-#define elapsed_microseconds() 0
 #endif
 
 #define error(...)                                                             \
   do {                                                                         \
+    enif_fprintf(stderr, "%s:%d\t(fn: \"%s\")  - ", __FILE__, __LINE__,        \
+                 __func__);                                                    \
     enif_fprintf(stderr, __VA_ARGS__);                                         \
     enif_fprintf(stderr, "\n");                                                \
   } while (0)
+
+#define assert_argc(argc, count)                                               \
+  if (argc != count) {                                                         \
+    error("number of arguments must be %d", count);                            \
+    return enif_make_badarg(env);                                              \
+  }
 
 static const int UNBUFFERED_READ = -1;
 static const int PIPE_BUF_SIZE = 65535;
@@ -128,8 +134,7 @@ static int select_write(ErlNifEnv *env, int *fd) {
 
 static ERL_NIF_TERM nif_write(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  if (argc != 2)
-    return enif_make_badarg(env);
+  assert_argc(argc, 2);
 
   ErlNifTime start;
   ssize_t size;
@@ -183,8 +188,7 @@ static int select_read(ErlNifEnv *env, int *fd) {
 
 static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
                                   const ERL_NIF_TERM argv[]) {
-  if (argc != 1)
-    return enif_make_badarg(env);
+  assert_argc(argc, 1);
 
   ERL_NIF_TERM term;
   int *fd;
@@ -206,8 +210,7 @@ error_exit:
 
 static ERL_NIF_TERM nif_read(ErlNifEnv *env, int argc,
                              const ERL_NIF_TERM argv[]) {
-  if (argc != 2)
-    return enif_make_badarg(env);
+  assert_argc(argc, 2);
 
   ErlNifTime start;
   int size, demand;
@@ -270,8 +273,7 @@ static ERL_NIF_TERM nif_read(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM nif_close(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  if (argc != 1)
-    return enif_make_badarg(env);
+  assert_argc(argc, 1);
 
   int *fd;
 
@@ -285,10 +287,9 @@ static ERL_NIF_TERM nif_close(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM nif_is_os_pid_alive(ErlNifEnv *env, int argc,
                                         const ERL_NIF_TERM argv[]) {
-  pid_t pid;
+  assert_argc(argc, 1);
 
-  if (argc != 1)
-    return enif_make_badarg(env);
+  pid_t pid;
 
   // we should not assume pid type to be `int`?
   if (!enif_get_int(env, argv[0], (int *)&pid))
@@ -304,11 +305,10 @@ static ERL_NIF_TERM nif_is_os_pid_alive(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM nif_kill(ErlNifEnv *env, int argc,
                              const ERL_NIF_TERM argv[]) {
+  assert_argc(argc, 2);
+
   pid_t pid;
   int ret;
-
-  if (argc != 2)
-    return enif_make_badarg(env);
 
   // we should not assume pid type to be `int`?
   if (!enif_get_int(env, argv[0], (int *)&pid))
