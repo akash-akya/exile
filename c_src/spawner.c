@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+// these definitions are Linux only at the moment
 #ifndef CMSG_LEN
 socklen_t CMSG_LEN(size_t len) {
   return (CMSG_DATA((struct cmsghdr *)NULL) - (unsigned char *)NULL) + len;
@@ -23,7 +24,8 @@ socklen_t CMSG_SPACE(size_t len) {
   struct msghdr msg;
   struct cmsghdr cmsg;
   msg.msg_control = &cmsg;
-  msg.msg_controllen = ~0; /* To maximize the chance that CMSG_NXTHDR won't return NULL */
+  msg.msg_controllen =
+      ~0; /* To maximize the chance that CMSG_NXTHDR won't return NULL */
   cmsg.cmsg_len = CMSG_LEN(len);
   return (unsigned char *)CMSG_NXTHDR(&msg, &cmsg) - (unsigned char *)&cmsg;
 }
@@ -63,8 +65,12 @@ static int send_io_fds(int socket, int read_fd, int write_fd) {
   struct cmsghdr *cmsg;
   int fds[2];
   char buf[CMSG_SPACE(2 * sizeof(int))], dup[256];
+  struct iovec io;
+
   memset(buf, '\0', sizeof(buf));
-  struct iovec io = {.iov_base = &dup, .iov_len = sizeof(dup)};
+
+  io.iov_base = &dup;
+  io.iov_len = sizeof(dup);
 
   msg.msg_iov = &io;
   msg.msg_iovlen = 1;
@@ -78,6 +84,7 @@ static int send_io_fds(int socket, int read_fd, int write_fd) {
 
   fds[0] = read_fd;
   fds[1] = write_fd;
+
   memcpy((int *)CMSG_DATA(cmsg), fds, 2 * sizeof(int));
 
   if (sendmsg(socket, &msg, 0) < 0) {
@@ -89,16 +96,13 @@ static int send_io_fds(int socket, int read_fd, int write_fd) {
 }
 
 /* This is not ideal, but as of now there is no portable way to do this */
-
-/*
-static void close_all_fds() {
+static void close_all_non_io_fds() {
   int fd_limit = (int)sysconf(_SC_OPEN_MAX);
   for (int i = STDERR_FILENO + 1; i < fd_limit; i++)
     close(i);
 }
-*/
 
-static void close_all(int pipes[2][2]) {
+static void close_pipes(int pipes[2][2]) {
   for (int i = 0; i < 2; i++) {
     if (pipes[i][PIPE_READ] > 0)
       close(pipes[i][PIPE_READ]);
@@ -109,59 +113,58 @@ static void close_all(int pipes[2][2]) {
 
 static int exec_process(char const *bin, char *const *args, int socket) {
   int pipes[2][2] = {{0, 0}, {0, 0}};
+  int r_cmdin, w_cmdin, r_cmdout, w_cmdout;
 
   if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1) {
     perror("[spawner] failed to create pipes");
-    close_all(pipes);
+    close_pipes(pipes);
     return 1;
   }
 
-  debug("[spawner] pipe: done\r\n");
+  debug("created pipes");
 
-  const int r_cmdin = pipes[STDIN_FILENO][PIPE_READ];
-  const int w_cmdin = pipes[STDIN_FILENO][PIPE_WRITE];
+  r_cmdin = pipes[STDIN_FILENO][PIPE_READ];
+  w_cmdin = pipes[STDIN_FILENO][PIPE_WRITE];
 
-  const int r_cmdout = pipes[STDOUT_FILENO][PIPE_READ];
-  const int w_cmdout = pipes[STDOUT_FILENO][PIPE_WRITE];
+  r_cmdout = pipes[STDOUT_FILENO][PIPE_READ];
+  w_cmdout = pipes[STDOUT_FILENO][PIPE_WRITE];
 
   if (set_flag(r_cmdin, O_CLOEXEC) < 0 || set_flag(w_cmdout, O_CLOEXEC) < 0 ||
       set_flag(w_cmdin, O_CLOEXEC | O_NONBLOCK) < 0 ||
       set_flag(r_cmdout, O_CLOEXEC | O_NONBLOCK) < 0) {
     perror("[spawner] failed to set flags for pipes");
-    close_all(pipes);
+    close_pipes(pipes);
     return 1;
   }
 
-  debug("[spawner] set_flag done\r\n");
+  debug("set fd flags to pipes");
 
   if (send_io_fds(socket, w_cmdin, r_cmdout) != EXIT_SUCCESS) {
     perror("[spawner] failed to send fd via socket");
-    close_all(pipes);
+    close_pipes(pipes);
     return 1;
   }
 
-  debug("[spawner] send_io_fds: done\r\n");
-
-  // TODO: close all fds including socket
-  // close_all_fds();
-
-  debug("[spawner] w_cmdin: %d r_cmdout: %d\r\n", w_cmdin, w_cmdout);
-  debug("[spawner] argv: %s\r\n", args[1]);
-
-  close(w_cmdin);
-  close(r_cmdout);
+  debug("sent fds over UDS");
 
   close(STDIN_FILENO);
+  close(w_cmdin);
   if (dup2(r_cmdin, STDIN_FILENO) < 0) {
     perror("[spawner] failed to dup to stdin");
     _exit(FORK_EXEC_FAILURE);
   }
 
   close(STDOUT_FILENO);
+  close(r_cmdout);
   if (dup2(w_cmdout, STDOUT_FILENO) < 0) {
     perror("[spawner] failed to dup to stdout");
     _exit(FORK_EXEC_FAILURE);
   }
+
+  // Note that we are not closing STDERR
+  close_all_non_io_fds();
+
+  debug("exec %s", bin);
 
   execvp(bin, args);
   perror("[spawner] execvp(): failed");
@@ -169,59 +172,55 @@ static int exec_process(char const *bin, char *const *args, int socket) {
   _exit(FORK_EXEC_FAILURE);
 }
 
-static int handle(const char *sock_path, const char *bin, char *const *args) {
-  int sfd;
-  struct sockaddr_un addr;
+static int spawn(const char *socket_path, const char *bin, char *const *args) {
+  int socket_fd;
+  struct sockaddr_un socket_addr;
 
-  debug("[spawner] hadle\r\n");
+  socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
 
-  sfd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (sfd == -1) {
+  if (socket_fd == -1) {
     debug("Failed to create socket");
     return EXIT_FAILURE;
   }
 
-  memset(&addr, 0, sizeof(struct sockaddr_un));
-  addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+  debug("created domain socket");
 
-  debug("[spawner] connect\r\n");
+  memset(&socket_addr, 0, sizeof(struct sockaddr_un));
+  socket_addr.sun_family = AF_UNIX;
+  strncpy(socket_addr.sun_path, socket_path, sizeof(socket_addr.sun_path) - 1);
 
-  if (connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_un)) ==
-      -1) {
+  if (connect(socket_fd, (struct sockaddr *)&socket_addr,
+              sizeof(struct sockaddr_un)) == -1) {
     debug("Failed to connect to socket");
     return EXIT_FAILURE;
   }
 
-  debug("[spawner] exec_process\r\n");
+  debug("connected to exile");
 
-  if (exec_process(bin, args, sfd) != 0)
-    return -1;
+  if (exec_process(bin, args, socket_fd) != 0)
+    return EXIT_FAILURE;
 
-  // we never reach here
-  return 0;
+  // we should never reach here
+  return EXIT_SUCCESS;
 }
 
 int main(int argc, const char *argv[]) {
-  int status = EXIT_SUCCESS;
-  const char **proc_argv;
-
-  debug("[spawner] argc: %d\r\n", argc);
+  int status, i;
+  const char **exec_argv;
 
   if (argc < 3) {
-    debug("[spawner] exit\r\n");
+    debug("expected at least 2 arguments, passed %d", argc);
     status = EXIT_FAILURE;
   } else {
-    proc_argv = malloc((argc - 2 + 1) * sizeof(char *));
+    exec_argv = malloc((argc - 2 + 1) * sizeof(char *));
 
-    int i;
     for (i = 2; i < argc; i++)
-      proc_argv[i - 2] = argv[i];
+      exec_argv[i - 2] = argv[i];
 
-    proc_argv[i - 2] = NULL;
+    exec_argv[i - 2] = NULL;
 
-    debug("[spawner] exec: %s\r\n", argv[2]);
-    status = handle(argv[1], argv[2], (char *const *)proc_argv);
+    debug("socket path: %s bin: %s", argv[1], argv[2]);
+    status = spawn(argv[1], argv[2], (char *const *)exec_argv);
   }
 
   exit(status);
