@@ -370,7 +370,7 @@ defmodule Exile.Process do
     end
   end
 
-  defp normalize_cmd(cmd) do
+  defp normalize_cmd([cmd | _]) when is_binary(cmd) do
     path = System.find_executable(cmd)
 
     if path do
@@ -432,8 +432,6 @@ defmodule Exile.Process do
       {:ok, %{cmd_with_args: [cmd | args], cd: cd, env: env}}
     end
   end
-
-  defp normalize_args(_, _), do: {:error, "invalid arguments"}
 
   @spawner_path :filename.join(:code.priv_dir(:exile), "spawner")
 
