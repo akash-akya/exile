@@ -1,4 +1,6 @@
 defmodule Exile.Watcher do
+  @moduledoc false
+
   use GenServer, restart: :temporary
   require Logger
   alias Exile.ProcessNif, as: Nif

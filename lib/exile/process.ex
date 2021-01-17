@@ -2,17 +2,15 @@ defmodule Exile.Process do
   @moduledoc """
   GenServer which wraps spawned external command.
 
-  One should use `Exile.stream!` over `Exile.Process`. stream internally manages this server for you. Use this only if you need more control over the  life-cycle OS process.
+  `Exile.stream!/1` should be preferred over this. Use this only if you need more control over the life-cycle of IO streams and OS process.
 
-  ## Overview
-  `Exile.Process` is an alternative primitive for Port. It has different interface and approach to running external programs to solve the issues associated with the ports.
+  ## Comparison with Port
 
-  ### When compared to Port
-    * it is demand driven. User explicitly has to `read` output of the command and the progress of the external command is controlled using OS pipes. so unlike Port, this never cause memory issues in beam by loading more than we can consume
-    * it can close stdin of the program explicitly
-    * does not create zombie process. It always tries to cleanup resources
+    * it is demand driven. User explicitly has to `read` the command output, and the progress of the external command is controlled using OS pipes. Exile never load more output than we can consume, so we should never experience memory issues
+    * it can close stdin while consuming stdout
+    * tries to handle zombie process by attempting to cleanup external process. Note that there is no middleware involved with exile so it is still possbile to endup with zombie process.
 
-  At high level it makes non-blocking asynchronous system calls to execute and interact with the external program. It completely bypasses beam implementation for the same using NIF. It uses `select()` system call for asynchronous IO. Most of the system calls are non-blocking, so it does not has adverse effect on scheduler. Issues such as "scheduler collapse".
+  Internally Exile uses non-blocking asynchronous system calls to interact with the external process. It does not use port's message based communication, instead uses raw stdio and NIF. Uses `select()` based API for asynchronous IO. Most of the system calls are non-blocking, so it should not block the beam schedulers. Make use of dirty-schedulers for IO
   """
 
   alias Exile.ProcessNif, as: Nif
@@ -35,9 +33,14 @@ defmodule Exile.Process do
   `cmd_with_args` must be a list containing command with arguments. example: `["cat", "file.txt"]`.
 
   ### Options
-    * `cd`                -  the directory to run the command in
-    * `env`               -  an enumerable of tuples containing environment key-value. These can be accessed in the external program
+    * `cd`   -  the directory to run the command in
+    * `env`  -  a list of tuples containing environment key-value. These can be accessed in the external program
   """
+  @type process :: pid
+  @spec start_link(nonempty_list(String.t()),
+          cd: String.t(),
+          env: [{String.t(), String.t()}]
+        ) :: {:ok, process} | {:error, any()}
   def start_link(cmd_with_args, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
 
@@ -46,14 +49,31 @@ defmodule Exile.Process do
     end
   end
 
+  @doc """
+  Closes external program's input stream
+  """
+  @spec close_stdin(process) :: :ok | {:error, any()}
   def close_stdin(process) do
     GenServer.call(process, :close_stdin, :infinity)
   end
 
+  @doc """
+  Writes iodata `data` to program's input streams
+
+  This blocks when the pipe is full
+  """
+  @spec write(process, binary) :: :ok | {:error, any()}
   def write(process, iodata) do
     GenServer.call(process, {:write, IO.iodata_to_binary(iodata)}, :infinity)
   end
 
+  @doc """
+  Return bytes written by the program to output stream.
+
+  This blocks until the programs write and flush the output depending on the `size`
+  """
+  @spec read(process, pos_integer()) ::
+          {:ok, iodata} | {:eof, iodata} | {:error, any()}
   def read(process, size) when (is_integer(size) and size > 0) or size == :unbuffered do
     GenServer.call(process, {:read, size}, :infinity)
   end
@@ -62,23 +82,42 @@ defmodule Exile.Process do
     GenServer.call(process, {:read, :unbuffered}, :infinity)
   end
 
+  @doc """
+  Sends signal to external program
+  """
+  @spec kill(process, :sigkill | :sigterm) :: :ok
   def kill(process, signal) when signal in [:sigkill, :sigterm] do
     GenServer.call(process, {:kill, signal}, :infinity)
   end
 
+  @doc """
+  Waits for the program to terminate.
+
+  If the program terminates before timeout, it returns `{:ok, exit_status}` else returns `:timeout`
+  """
+  @spec await_exit(process, timeout: timeout()) :: {:ok, integer()} | :timeout
   def await_exit(process, timeout \\ :infinity) do
     GenServer.call(process, {:await_exit, timeout}, :infinity)
   end
 
+  @doc """
+  Returns os pid of the command
+  """
+  @spec os_pid(process) :: pos_integer()
   def os_pid(process) do
     GenServer.call(process, :os_pid, :infinity)
   end
 
+  @doc """
+  Stops the exile process, external program will be terminated in the background
+  """
+  @spec stop(process) :: :ok
   def stop(process), do: GenServer.call(process, :stop, :infinity)
 
   ## Server
 
   defmodule Pending do
+    @moduledoc false
     defstruct bin: [], remaining: 0, client_pid: nil
   end
 
