@@ -152,27 +152,7 @@ defmodule Exile.Process do
 
   def handle_continue(nil, state) do
     Elixir.Process.flag(:trap_exit, true)
-
-    %{cmd_with_args: cmd_with_args, cd: cd, env: env} = state.args
-    socket_path = socket_path()
-
-    uds = create_unix_domain_socket!(socket_path)
-
-    port = exec(cmd_with_args, socket_path, env, cd)
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    Exile.Watcher.watch(self(), os_pid, socket_path)
-
-    {write_fd, read_fd} = receive_file_descriptors!(uds)
-
-    {:noreply,
-     %Process{
-       state
-       | port: port,
-         status: :start,
-         socket_path: socket_path,
-         stdin: read_fd,
-         stdout: write_fd
-     }}
+    {:noreply, start_process(state)}
   end
 
   def handle_call(:stop, _from, state) do
@@ -465,42 +445,66 @@ defmodule Exile.Process do
     end
   end
 
-  defp create_unix_domain_socket!(socket_path) do
-    {:ok, uds} = :socket.open(:local, :stream, :default)
-    {:ok, _} = :socket.bind(uds, %{family: :local, path: socket_path})
-    :ok = :socket.listen(uds)
-    uds
+  defp start_process(%{args: %{cmd_with_args: cmd_with_args, cd: cd, env: env}} = state) do
+    path = socket_path()
+    {:ok, sock} = :socket.open(:local, :stream, :default)
+
+    try do
+      {:ok, _} = :socket.bind(sock, %{family: :local, path: path})
+      :ok = :socket.listen(sock)
+
+      port = exec(cmd_with_args, path, env, cd)
+      {:os_pid, os_pid} = Port.info(port, :os_pid)
+      Exile.Watcher.watch(self(), os_pid, path)
+
+      {stdout, stdin} = receive_fds(sock)
+
+      %Process{
+        state
+        | port: port,
+          status: :start,
+          socket_path: path,
+          stdin: stdin,
+          stdout: stdout
+      }
+    after
+      :socket.close(sock)
+    end
   end
 
   @socket_timeout 2000
-  defp receive_file_descriptors!(uds) do
-    with {:ok, sock} <- :socket.accept(uds, @socket_timeout),
-         {:ok, msg} <- :socket.recvmsg(sock) do
-      %{
-        ctrl: [
+  defp receive_fds(lsock) do
+    {:ok, sock} = :socket.accept(lsock, @socket_timeout)
+
+    try do
+      case :socket.recvmsg(sock, @socket_timeout) do
+        {:ok, msg} ->
           %{
-            data: <<read_fd_int::native-32, write_fd_int::native-32, _rest::binary>>,
-            level: :socket,
-            type: :rights
-          }
-        ]
-      } = msg
+            ctrl: [
+              %{
+                data: <<stdin_fd_int::native-32, stdout_fd_int::native-32, _::binary>>,
+                level: :socket,
+                type: :rights
+              }
+            ]
+          } = msg
 
-      :socket.close(sock)
+          with {:ok, stdout} <- Nif.nif_create_fd(stdout_fd_int),
+               {:ok, stdin} <- Nif.nif_create_fd(stdin_fd_int) do
+            {stdout, stdin}
+          else
+            error ->
+              raise Error,
+                message: "Failed to create fd resources\n  error: #{inspect(error)}"
+          end
 
-      with {:ok, write_fd} <- Nif.nif_create_fd(write_fd_int),
-           {:ok, read_fd} <- Nif.nif_create_fd(read_fd_int) do
-        {write_fd, read_fd}
-      else
-        error ->
+        {:error, reason} ->
           raise Error,
-            message: "Failed to create fd resources\n  error: #{inspect(error)}"
+            message:
+              "Failed to receive stdin and stdout file descriptors\n  error: #{inspect(reason)}"
       end
-    else
-      error ->
-        raise Error,
-          message:
-            "Failed to receive stdin and stdout file descriptors\n  error: #{inspect(error)}"
+    after
+      :socket.close(sock)
     end
   end
 end

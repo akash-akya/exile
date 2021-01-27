@@ -38,6 +38,7 @@ socklen_t CMSG_SPACE(size_t len) {
   do {                                                                         \
     fprintf(stderr, "%s:%d\t(fn \"%s\")  - ", __FILE__, __LINE__, __func__);   \
     fprintf(stderr, __VA_ARGS__);                                              \
+    fprintf(stderr, "\n");                                              \
   } while (0)
 #else
 #define debug(...)
@@ -47,6 +48,7 @@ socklen_t CMSG_SPACE(size_t len) {
   do {                                                                         \
     fprintf(stderr, "%s:%d\t(fn: \"%s\")  - ", __FILE__, __LINE__, __func__);  \
     fprintf(stderr, __VA_ARGS__);                                              \
+    fprintf(stderr, "\n");                                              \
   } while (0)
 
 static const int PIPE_READ = 0;
@@ -96,7 +98,7 @@ static int send_io_fds(int socket, int read_fd, int write_fd) {
 }
 
 /* This is not ideal, but as of now there is no portable way to do this */
-static void close_all_non_io_fds() {
+static void close_all_non_std_fds() {
   int fd_limit = (int)sysconf(_SC_OPEN_MAX);
   for (int i = STDERR_FILENO + 1; i < fd_limit; i++)
     close(i);
@@ -162,7 +164,7 @@ static int exec_process(char const *bin, char *const *args, int socket) {
   }
 
   // Note that we are not closing STDERR
-  close_all_non_io_fds();
+  close_all_non_std_fds();
 
   debug("exec %s", bin);
 
