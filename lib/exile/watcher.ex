@@ -57,7 +57,7 @@ defmodule Exile.Watcher do
 
       Logger.debug("Failed to stop external program with SIGTERM. attempting SIGKILL")
       Nif.nif_kill(os_pid, :sigkill)
-      process_exit?(os_pid, 1000) && throw(:done)
+      process_exit?(os_pid, 200) && throw(:done)
 
       Logger.error("failed to kill external process")
       raise "Failed to kill external process"

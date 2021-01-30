@@ -71,7 +71,6 @@ defmodule Exile.ProcessTest do
   end
 
   test "external command kill on stop" do
-    # cat command hangs waiting for EOF
     {:ok, s} = Process.start_link([fixture("ignore_sigterm.sh")])
 
     {:ok, os_pid} = Process.os_pid(s)
@@ -79,7 +78,7 @@ defmodule Exile.ProcessTest do
     Process.stop(s)
 
     if os_process_alive?(os_pid) do
-      :timer.sleep(3000)
+      :timer.sleep(1000)
       refute os_process_alive?(os_pid)
     else
       :ok
