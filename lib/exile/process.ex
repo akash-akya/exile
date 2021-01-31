@@ -10,7 +10,7 @@ defmodule Exile.Process do
     * it can close stdin while consuming stdout
     * tries to handle zombie process by attempting to cleanup external process. Note that there is no middleware involved with exile so it is still possbile to endup with zombie process.
 
-  Internally Exile uses non-blocking asynchronous system calls to interact with the external process. It does not use port's message based communication, instead uses raw stdio and NIF. Uses `select()` based API for asynchronous IO. Most of the system calls are non-blocking, so it should not block the beam schedulers. Make use of dirty-schedulers for IO
+  Internally Exile uses non-blocking asynchronous system calls to interact with the external process. It does not use port's message based communication, instead uses raw stdio and NIF. Uses asynchronous system calls for IO. Most of the system calls are non-blocking, so it should not block the beam schedulers. Make use of dirty-schedulers for IO
   """
 
   alias Exile.ProcessNif, as: Nif
@@ -188,6 +188,15 @@ defmodule Exile.Process do
     {:noreply, %Process{state | await: Map.put(state.await, from, tref)}}
   end
 
+  def handle_call({:read, size}, from, state) do
+    if state.pending_read.client_pid do
+      {:reply, {:error, :pending_read}, state}
+    else
+      pending = %Pending{remaining: size, client_pid: from}
+      do_read(%Process{state | pending_read: pending})
+    end
+  end
+
   def handle_call(_, _from, %{status: {:exit, status}} = state) do
     {:reply, {:error, {:exit, status}}, state}
   end
@@ -203,15 +212,6 @@ defmodule Exile.Process do
       true ->
         pending = %Pending{bin: binary, client_pid: from}
         do_write(%Process{state | pending_write: pending})
-    end
-  end
-
-  def handle_call({:read, size}, from, state) do
-    if state.pending_read.client_pid do
-      {:reply, {:error, :pending_read}, state}
-    else
-      pending = %Pending{remaining: size, client_pid: from}
-      do_read(%Process{state | pending_read: pending})
     end
   end
 
