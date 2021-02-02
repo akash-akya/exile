@@ -38,7 +38,7 @@ socklen_t CMSG_SPACE(size_t len) {
   do {                                                                         \
     fprintf(stderr, "%s:%d\t(fn \"%s\")  - ", __FILE__, __LINE__, __func__);   \
     fprintf(stderr, __VA_ARGS__);                                              \
-    fprintf(stderr, "\n");                                              \
+    fprintf(stderr, "\n");                                                     \
   } while (0)
 #else
 #define debug(...)
@@ -48,7 +48,7 @@ socklen_t CMSG_SPACE(size_t len) {
   do {                                                                         \
     fprintf(stderr, "%s:%d\t(fn: \"%s\")  - ", __FILE__, __LINE__, __func__);  \
     fprintf(stderr, __VA_ARGS__);                                              \
-    fprintf(stderr, "\n");                                              \
+    fprintf(stderr, "\n");                                                     \
   } while (0)
 
 static const int PIPE_READ = 0;
@@ -97,13 +97,6 @@ static int send_io_fds(int socket, int read_fd, int write_fd) {
   return EXIT_SUCCESS;
 }
 
-/* This is not ideal, but as of now there is no portable way to do this */
-static void close_all_non_std_fds() {
-  int fd_limit = (int)sysconf(_SC_OPEN_MAX);
-  for (int i = STDERR_FILENO + 1; i < fd_limit; i++)
-    close(i);
-}
-
 static void close_pipes(int pipes[2][2]) {
   for (int i = 0; i < 2; i++) {
     if (pipes[i][PIPE_READ] > 0)
@@ -116,6 +109,7 @@ static void close_pipes(int pipes[2][2]) {
 static int exec_process(char const *bin, char *const *args, int socket) {
   int pipes[2][2] = {{0, 0}, {0, 0}};
   int r_cmdin, w_cmdin, r_cmdout, w_cmdout;
+  int i;
 
   if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1) {
     perror("[spawner] failed to create pipes");
@@ -163,8 +157,9 @@ static int exec_process(char const *bin, char *const *args, int socket) {
     _exit(FORK_EXEC_FAILURE);
   }
 
-  // Note that we are not closing STDERR
-  close_all_non_std_fds();
+  /* Close all non-standard io fds. Not closing STDERR */
+  for (i = STDERR_FILENO + 1; i < sysconf(_SC_OPEN_MAX); i++)
+    close(i);
 
   debug("exec %s", bin);
 

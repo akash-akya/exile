@@ -58,6 +58,7 @@ static ERL_NIF_TERM ATOM_OK;
 static ERL_NIF_TERM ATOM_ERROR;
 static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_INVALID_FD;
+static ERL_NIF_TERM ATOM_SELECT_CANCEL_ERROR;
 static ERL_NIF_TERM ATOM_EAGAIN;
 
 static ERL_NIF_TERM ATOM_SIGKILL;
@@ -70,21 +71,34 @@ static void close_fd(int *fd) {
   }
 }
 
+static int cancel_select(ErlNifEnv *env, int *fd) {
+  int ret;
+
+  if (*fd != FD_CLOSED) {
+    ret = enif_select(env, *fd, ERL_NIF_SELECT_STOP, fd, NULL, ATOM_UNDEFINED);
+    if (ret < 0)
+      perror("cancel_select()");
+
+    return ret;
+  }
+
+  return 0;
+}
+
 static void io_resource_dtor(ErlNifEnv *env, void *obj) {
-  int *fd = (int *)obj;
-  close_fd(fd);
   debug("Exile io_resource_dtor called");
 }
 
 static void io_resource_stop(ErlNifEnv *env, void *obj, int fd,
                              int is_direct_call) {
+  close_fd(&fd);
   debug("Exile io_resource_stop called %d", fd);
 }
 
 static void io_resource_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
                              ErlNifMonitor *monitor) {
   int *fd = (int *)obj;
-  close_fd(fd);
+  cancel_select(env, fd);
   debug("Exile io_resource_down called");
 }
 
@@ -162,7 +176,7 @@ static ERL_NIF_TERM nif_write(ErlNifEnv *env, int argc,
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_error(env, ATOM_EAGAIN);
-  } else { // Error
+  } else {
     perror("write()");
     return make_error(env, enif_make_int(env, write_errno));
   }
@@ -182,12 +196,29 @@ static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
   assert_argc(argc, 1);
 
   ERL_NIF_TERM term;
+  ErlNifPid pid;
   int *fd;
+  int ret;
 
   fd = enif_alloc_resource(FD_RT, sizeof(int));
 
   if (!enif_get_int(env, argv[0], fd))
     goto error_exit;
+
+  if (!enif_self(env, &pid)) {
+    error("failed get self pid");
+    goto error_exit;
+  }
+
+  ret = enif_monitor_process(env, fd, &pid, NULL);
+
+  if (ret < 0) {
+    error("no down callback is provided");
+    goto error_exit;
+  } else if (ret > 0) {
+    error("pid is not alive");
+    goto error_exit;
+  }
 
   term = enif_make_resource(env, fd);
   enif_release_resource(fd);
@@ -255,7 +286,7 @@ static ERL_NIF_TERM nif_read(ErlNifEnv *env, int argc,
       if (retval != 0)
         return make_error(env, enif_make_int(env, retval));
       return make_error(env, ATOM_EAGAIN);
-    } else { // Error
+    } else {
       perror("read()");
       return make_error(env, enif_make_int(env, read_errno));
     }
@@ -271,6 +302,9 @@ static ERL_NIF_TERM nif_close(ErlNifEnv *env, int argc,
   if (!enif_get_resource(env, argv[0], FD_RT, (void **)&fd))
     return make_error(env, ATOM_INVALID_FD);
 
+  if (cancel_select(env, fd) < 0)
+    return make_error(env, ATOM_SELECT_CANCEL_ERROR);
+
   close_fd(fd);
 
   return ATOM_OK;
@@ -282,7 +316,6 @@ static ERL_NIF_TERM nif_is_os_pid_alive(ErlNifEnv *env, int argc,
 
   pid_t pid;
 
-  // we should not assume pid type to be `int`?
   if (!enif_get_int(env, argv[0], (int *)&pid))
     return enif_make_badarg(env);
 
@@ -333,6 +366,7 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   ATOM_UNDEFINED = enif_make_atom(env, "undefined");
   ATOM_INVALID_FD = enif_make_atom(env, "invalid_fd_resource");
   ATOM_EAGAIN = enif_make_atom(env, "eagain");
+  ATOM_SELECT_CANCEL_ERROR = enif_make_atom(env, "select_cancel_error");
 
   ATOM_SIGTERM = enif_make_atom(env, "sigterm");
   ATOM_SIGKILL = enif_make_atom(env, "sigkill");
