@@ -23,3 +23,8 @@ erl_crash.dump
 exile-*.tar
 
 .dir-locals.el
+
+# Bench
+/bench/_build/
+/bench/deps/
+/bench/output/
