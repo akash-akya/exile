@@ -12,11 +12,13 @@ Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_vid
 
 `Exile.stream!` is a convenience wrapper around `Exile.Process`. If you want more control over stdin, stdout, and os process use `Exile.Process` directly.
 
-**Note: Exile is experimental and it is still work-in-progress. Exile is based on NIF, please know the implications of it before using it**
+Exile requires OTP v22.1 and above.
+
+**Exile is experimental and it is still work-in-progress. Exile is based on NIF, please know the implications of it before using it**
 
 ## Rationale
 
-Approaches, and issues
+Existing approaches
 
 #### Port
 
