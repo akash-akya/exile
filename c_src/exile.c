@@ -102,8 +102,7 @@ static void io_resource_down(ErlNifEnv *env, void *obj, ErlNifPid *pid,
   debug("Exile io_resource_down called");
 }
 
-static ErlNifResourceTypeInit io_rt_init = {io_resource_dtor, io_resource_stop,
-                                            io_resource_down};
+static ErlNifResourceTypeInit io_rt_init;
 
 static ErlNifResourceType *FD_RT;
 
@@ -355,6 +354,10 @@ static ERL_NIF_TERM nif_kill(ErlNifEnv *env, int argc,
 }
 
 static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
+  io_rt_init.dtor = io_resource_dtor;
+  io_rt_init.stop = io_resource_stop;
+  io_rt_init.down = io_resource_down;
+
   FD_RT =
       enif_open_resource_type_x(env, "exile_resource", &io_rt_init,
                                 ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER, NULL);

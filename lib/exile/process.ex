@@ -450,7 +450,7 @@ defmodule Exile.Process do
     {:ok, sock} = :socket.open(:local, :stream, :default)
 
     try do
-      {:ok, _} = :socket.bind(sock, %{family: :local, path: path})
+      :ok = socket_bind(sock, path)
       :ok = :socket.listen(sock)
 
       port = exec(cmd_with_args, path, env, cd)
@@ -505,6 +505,15 @@ defmodule Exile.Process do
       end
     after
       :socket.close(sock)
+    end
+  end
+
+  defp socket_bind(sock, path) do
+    case :socket.bind(sock, %{family: :local, path: path}) do
+      :ok -> :ok
+      # for OTP version <= 24 compatibility
+      {:ok, _} -> :ok
+      other -> other
     end
   end
 end
