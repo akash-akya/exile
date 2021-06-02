@@ -102,10 +102,7 @@ defmodule Exile.Stream do
 
             {exit_type, error} ->
               Process.kill(process, :sigkill)
-
-              raise "command exited with exit_type: #{inspect(exit_type)}, error: #{
-                      inspect(error)
-                    }"
+              raise "command exited with exit_type: #{exit_type}, error: #{inspect(error)}"
           end
         after
           Process.stop(process)

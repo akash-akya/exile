@@ -41,7 +41,7 @@ defmodule Exile.MixProject do
   defp package do
     [
       maintainers: ["Akash Hiremath"],
-      licenses: ["MIT"],
+      licenses: ["Apache-2.0"],
       links: %{GitHub: "https://github.com/akash-akya/exile"}
     ]
   end
