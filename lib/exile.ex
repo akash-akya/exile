@@ -48,7 +48,10 @@ defmodule Exile do
 
     * `exit_timeout` - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
 
-    * `chunk_size` - Size of each iodata chunk emitted by Enumerable stream. When set to `:unbuffered` the output is unbuffered and chunk size will be variable depending on the amount of data availble at that time. Defaults to 65535
+    * `chunk_size` - Maximum size of each iodata chunk emitted by stream. Chunk size will be variable depending on the amount of data availble at that time. Defaults to 65535
+
+    * `use_stderr` - When set to true, stream will contain stderr output along with stdout output. Element of the stream will be of the form `{:stdout, iodata}` or `{:stderr, iodata}` to differentiate different streams. Defaults to false. See example below
+
 
   All other options are passed to `Exile.Process.start_link/3`
 
@@ -59,13 +62,30 @@ defmodule Exile do
   |> Stream.into(File.stream!("music.mp3"))
   |> Stream.run()
   ```
+
+  Stream with stderr
+
+  ```
+  script = \"""
+  for i in {1..10}; do
+    echo "foo ${i}"
+    echo "bar ${i}" >&2
+  done
+  \"""
+
+  Exile.stream!(["sh", "-c", script], use_stderr: true)
+  |> Enum.each(fn {stream, lines} ->
+    String.split(lines, "\\n", trim: true)
+    |> Enum.each(fn line -> IO.puts("\#{stream}: \#{line}") end)
+  end)
+  ```
   """
   @type collectable_func() :: (Collectable.t() -> any())
 
   @spec stream!(nonempty_list(String.t()),
           input: Enum.t() | collectable_func(),
           exit_timeout: timeout(),
-          chunk_size: pos_integer() | :unbuffered
+          max_chunk_size: pos_integer()
         ) :: ExCmd.Stream.t()
   def stream!(cmd_with_args, opts \\ []) do
     Exile.Stream.__build__(cmd_with_args, opts)

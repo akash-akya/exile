@@ -4,7 +4,8 @@ defmodule Exile.ProcessTest do
 
   test "read" do
     {:ok, s} = Process.start_link(~w(echo test))
-    assert {:eof, iodata} = Process.read(s, 100)
+    assert {:ok, iodata} = Process.read(s, 100)
+    assert :eof = Process.read(s, 100)
     assert IO.iodata_to_binary(iodata) == "test\n"
     assert :ok == Process.close_stdin(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
@@ -22,7 +23,7 @@ defmodule Exile.ProcessTest do
     assert IO.iodata_to_binary(iodata) == "world"
 
     assert :ok == Process.close_stdin(s)
-    assert {:eof, []} == Process.read(s)
+    assert :eof == Process.read(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 100)
     Process.stop(s)
   end
@@ -103,11 +104,63 @@ defmodule Exile.ProcessTest do
 
     :timer.sleep(100)
 
-    {_, iodata} = Process.read(s, 5 * 65535)
+    iodata =
+      Stream.unfold(nil, fn _ ->
+        case Process.read(s) do
+          {:ok, data} -> {data, nil}
+          :eof -> nil
+        end
+      end)
+      |> Enum.to_list()
+
     Task.await(writer)
 
     assert IO.iodata_length(iodata) == 5 * 65535
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
+    Process.stop(s)
+  end
+
+  test "stderr_read" do
+    {:ok, s} = Process.start_link(["sh", "-c", "echo foo >>/dev/stderr"], use_stderr: true)
+    assert {:ok, "foo\n"} = Process.read_stderr(s, 100)
+    Process.stop(s)
+  end
+
+  test "stderr_read with stderr disabled" do
+    {:ok, s} = Process.start_link(["sh", "-c", "echo foo >>/dev/stderr"], use_stderr: false)
+    assert {:error, :cannot_read_stderr} = Process.read_stderr(s, 100)
+    Process.stop(s)
+  end
+
+  test "stderr_any" do
+    script = """
+    echo "foo"
+    echo "bar" >&2
+    """
+
+    {:ok, s} = Process.start_link(["sh", "-c", script], use_stderr: true)
+    {:ok, ret1} = Process.read_any(s, 100)
+    {:ok, ret2} = Process.read_any(s, 100)
+
+    assert {:stderr, "bar\n"} in [ret1, ret2]
+    assert {:stdout, "foo\n"} in [ret1, ret2]
+
+    assert :eof = Process.read_any(s, 100)
+    Process.stop(s)
+  end
+
+  test "stderr_any with stderr disabled" do
+    script = """
+    echo "foo"
+    echo "bar" >&2
+    """
+
+    {:ok, s} = Process.start_link(["sh", "-c", script], use_stderr: false)
+    {:ok, ret1} = Process.read_any(s, 100)
+
+    assert ret1 == {:stdout, "foo\n"}
+
+    assert :eof = Process.read_any(s, 100)
     Process.stop(s)
   end
 
@@ -121,11 +174,8 @@ defmodule Exile.ProcessTest do
 
     writer =
       Task.async(fn ->
-        Enum.each(1..10, fn i ->
-          Process.write(s, large_bin)
-          add_event(logger, {:write, i})
-        end)
-
+        :ok = Process.write(s, large_bin)
+        add_event(logger, {:write, IO.iodata_length(large_bin)})
         Process.close_stdin(s)
       end)
 
@@ -133,12 +183,19 @@ defmodule Exile.ProcessTest do
 
     reader =
       Task.async(fn ->
-        Enum.each(1..10, fn i ->
-          Process.read(s, 5 * 65535)
-          add_event(logger, {:read, i})
-          # delay in reading should delay writes
-          :timer.sleep(10)
+        Stream.unfold(nil, fn _ ->
+          case Process.read(s) do
+            {:ok, data} ->
+              add_event(logger, {:read, IO.iodata_length(data)})
+              # delay in reading should delay writes
+              :timer.sleep(10)
+              {nil, nil}
+
+            :eof ->
+              nil
+          end
         end)
+        |> Stream.run()
       end)
 
     Task.await(writer)
@@ -147,28 +204,15 @@ defmodule Exile.ProcessTest do
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
     Process.stop(s)
 
-    assert [
-             write: 1,
-             read: 1,
-             write: 2,
-             read: 2,
-             write: 3,
-             read: 3,
-             write: 4,
-             read: 4,
-             write: 5,
-             read: 5,
-             write: 6,
-             read: 6,
-             write: 7,
-             read: 7,
-             write: 8,
-             read: 8,
-             write: 9,
-             read: 9,
-             write: 10,
-             read: 10
-           ] == get_events(logger)
+    events = get_events(logger)
+
+    {write_events, read_evants} = Enum.split_with(events, &match?({:write, _}, &1))
+
+    assert Enum.sum(Enum.map(read_evants, fn {:read, size} -> size end)) ==
+             Enum.sum(Enum.map(write_events, fn {:write, size} -> size end))
+
+    # There must be a read before write completes
+    assert hd(events) == {:read, 65535}
   end
 
   # this test does not work properly in linux
@@ -217,7 +261,7 @@ defmodule Exile.ProcessTest do
 
     # delaying concurrent read to avoid race-condition
     Elixir.Process.sleep(100)
-    assert {:error, :pending_read} = Process.read(s, 1)
+    assert {:error, :pending_stdout_read} = Process.read(s, 1)
 
     assert :ok == Process.close_stdin(s)
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 100)
@@ -300,7 +344,7 @@ defmodule Exile.ProcessTest do
         add_event(logger, {:read, data})
         reader_loop(proc_server, logger)
 
-      {:eof, []} ->
+      :eof ->
         add_event(logger, :eof)
     end
   end

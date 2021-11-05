@@ -11,7 +11,7 @@ defmodule Exile.ProcessNif do
 
   def nif_kill(_os_pid, _signal), do: :erlang.nif_error(:nif_library_not_loaded)
 
-  def nif_read(_fd, _request), do: :erlang.nif_error(:nif_library_not_loaded)
+  def nif_read(_fd, _max_size), do: :erlang.nif_error(:nif_library_not_loaded)
 
   def nif_create_fd(_fd), do: :erlang.nif_error(:nif_library_not_loaded)
 

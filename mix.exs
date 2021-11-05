@@ -30,7 +30,7 @@ defmodule Exile.MixProject do
   def application do
     [
       mod: {Exile, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger, :crypto]
     ]
   end
 

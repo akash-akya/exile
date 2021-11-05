@@ -55,6 +55,7 @@ Internally Exile uses non-blocking asynchronous system calls to interact with th
   * no need to install any external command
 * tries to handle zombie process by attempting to cleanup external process. *But* as there is no middleware involved with exile so it is still possbile to endup with zombie process
 * stream abstraction
+* selectively consume stdout and stderr
 
 If you are running executing huge number of external programs **concurrently** (more than few hundred) you might have to increase open file descriptors limit (`ulimit -n`)
 
