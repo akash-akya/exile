@@ -53,7 +53,7 @@ defmodule Exile do
     * `use_stderr` - When set to true, stream will contain stderr output along with stdout output. Element of the stream will be of the form `{:stdout, iodata}` or `{:stderr, iodata}` to differentiate different streams. Defaults to false. See example below
 
 
-  All other options are passed to `Exile.Process.start_link/3`
+  All other options are passed to `Exile.Process.start_link/2`
 
   ### Examples
 

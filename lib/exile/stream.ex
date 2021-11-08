@@ -1,12 +1,14 @@
 defmodule Exile.Stream do
   @moduledoc """
-  Defines a `Exile.Stream` struct returned by `Exile.stream!/3`.
+  Defines a `Exile.Stream` struct returned by `Exile.stream!/2`.
   """
 
   alias Exile.Process
   alias Exile.Process.Error
 
   defmodule Sink do
+    @moduledoc false
+
     defstruct [:process]
 
     defimpl Collectable do
