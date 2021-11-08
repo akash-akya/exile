@@ -4,6 +4,7 @@ defmodule Exile.Stream do
   """
 
   alias Exile.Process
+  alias Exile.Process.Error
 
   defmodule Sink do
     defstruct [:process]
@@ -82,7 +83,7 @@ defmodule Exile.Stream do
             {[{stream, IO.iodata_to_binary(x)}], :normal}
 
           {:error, errno} ->
-            raise "Failed to read from the process. errno: #{errno}"
+            raise Error, "Failed to read from the external process. errno: #{errno}"
         end
       end
 
@@ -95,17 +96,17 @@ defmodule Exile.Stream do
           case {exit_type, result} do
             {_, :timeout} ->
               Process.kill(process, :sigkill)
-              raise "command fail to exit within timeout: #{stream_opts[:exit_timeout]}"
+              raise Error, "command fail to exit within timeout: #{stream_opts[:exit_timeout]}"
 
             {:normal, {:ok, {:exit, 0}}} ->
               :ok
 
             {:normal, {:ok, error}} ->
-              raise "command exited with status: #{inspect(error)}"
+              raise Error, "command exited with status: #{inspect(error)}"
 
             {exit_type, error} ->
               Process.kill(process, :sigkill)
-              raise "command exited with exit_type: #{exit_type}, error: #{inspect(error)}"
+              raise Error, "command exited with exit_type: #{exit_type}, error: #{inspect(error)}"
           end
         after
           Process.stop(process)

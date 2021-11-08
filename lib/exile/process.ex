@@ -42,6 +42,10 @@ defmodule Exile.Process do
     defstruct bin: [], size: 0, client_pid: nil
   end
 
+  defmodule Error do
+    defexception [:message]
+  end
+
   @default_opts [env: [], use_stderr: false]
   @default_buffer_size 65535
 
