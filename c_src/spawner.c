@@ -1,7 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
-
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
