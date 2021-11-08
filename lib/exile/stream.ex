@@ -1,11 +1,14 @@
 defmodule Exile.Stream do
   @moduledoc """
-  Defines a `Exile.Stream` struct returned by `Exile.stream!/3`.
+  Defines a `Exile.Stream` struct returned by `Exile.stream!/2`.
   """
 
   alias Exile.Process
+  alias Exile.Process.Error
 
   defmodule Sink do
+    @moduledoc false
+
     defstruct [:process]
 
     defimpl Collectable do
@@ -33,9 +36,11 @@ defmodule Exile.Stream do
 
   @doc false
   def __build__(cmd_with_args, opts) do
-    {stream_opts, process_opts} = Keyword.split(opts, [:exit_timeout, :chunk_size, :input])
+    {stream_opts, process_opts} =
+      Keyword.split(opts, [:exit_timeout, :max_chunk_size, :input, :use_stderr])
 
     with {:ok, stream_opts} <- normalize_stream_opts(stream_opts) do
+      process_opts = Keyword.put(process_opts, :use_stderr, stream_opts[:use_stderr])
       {:ok, process} = Process.start_link(cmd_with_args, process_opts)
       start_input_streamer(%Sink{process: process}, stream_opts.input)
       %Exile.Stream{process: process, stream_opts: stream_opts}
@@ -63,23 +68,24 @@ defmodule Exile.Stream do
   end
 
   defimpl Enumerable do
-    def reduce(%{process: process, stream_opts: stream_opts}, acc, fun) do
-      start_fun = fn -> :ok end
+    def reduce(arg, acc, fun) do
+      %{process: process, stream_opts: %{use_stderr: use_stderr} = stream_opts} = arg
 
-      next_fun = fn :ok ->
-        case Process.read(process, stream_opts.chunk_size) do
-          {:eof, []} ->
+      start_fun = fn -> :normal end
+
+      next_fun = fn :normal ->
+        case Process.read_any(process, stream_opts.max_chunk_size) do
+          :eof ->
             {:halt, :normal}
 
-          {:eof, x} ->
-            # multiple reads on closed pipe always returns :eof
-            {[IO.iodata_to_binary(x)], :ok}
+          {:ok, {:stdout, x}} when use_stderr == false ->
+            {[IO.iodata_to_binary(x)], :normal}
 
-          {:ok, x} ->
-            {[IO.iodata_to_binary(x)], :ok}
+          {:ok, {stream, x}} when use_stderr == true ->
+            {[{stream, IO.iodata_to_binary(x)}], :normal}
 
           {:error, errno} ->
-            raise "Failed to read from the process. errno: #{errno}"
+            raise Error, "Failed to read from the external process. errno: #{errno}"
         end
       end
 
@@ -92,17 +98,17 @@ defmodule Exile.Stream do
           case {exit_type, result} do
             {_, :timeout} ->
               Process.kill(process, :sigkill)
-              raise "command fail to exit within timeout: #{stream_opts[:exit_timeout]}"
+              raise Error, "command fail to exit within timeout: #{stream_opts[:exit_timeout]}"
 
             {:normal, {:ok, {:exit, 0}}} ->
               :ok
 
             {:normal, {:ok, error}} ->
-              raise "command exited with status: #{inspect(error)}"
+              raise Error, "command exited with status: #{inspect(error)}"
 
             {exit_type, error} ->
               Process.kill(process, :sigkill)
-              raise "command exited with exit_type: #{exit_type}, error: #{inspect(error)}"
+              raise Error, "command exited with exit_type: #{exit_type}, error: #{inspect(error)}"
           end
         after
           Process.stop(process)
@@ -141,28 +147,57 @@ defmodule Exile.Stream do
     end
   end
 
-  defp normalize_chunk_size(nil), do: {:ok, 65536}
-  defp normalize_chunk_size(:no_buffering), do: {:ok, :no_buffering}
+  defp normalize_max_chunk_size(max_chunk_size) do
+    case max_chunk_size do
+      nil ->
+        {:ok, 65536}
 
-  defp normalize_chunk_size(chunk_size) do
-    if is_integer(chunk_size) and chunk_size > 0,
-      do: {:ok, chunk_size},
-      else: {:error, ":exit_timeout must be either :infinity or a positive integer"}
+      max_chunk_size when is_integer(max_chunk_size) and max_chunk_size > 0 ->
+        {:ok, max_chunk_size}
+
+      _ ->
+        {:error, ":max_chunk_size must be a positive integer"}
+    end
   end
 
-  defp normalize_exit_timeout(term) when term in [nil, :infinity], do: {:ok, :infinity}
+  defp normalize_exit_timeout(timeout) do
+    case timeout do
+      nil ->
+        {:ok, :infinity}
 
-  defp normalize_exit_timeout(term) do
-    if is_integer(term),
-      do: {:ok, term},
-      else: {:error, ":exit_timeout must be either :infinity or an integer"}
+      timeout when is_integer(timeout) and timeout > 0 ->
+        {:ok, timeout}
+
+      _ ->
+        {:error, ":exit_timeout must be either :infinity or an integer"}
+    end
+  end
+
+  defp normalize_use_stderr(use_stderr) do
+    case use_stderr do
+      nil ->
+        {:ok, false}
+
+      use_stderr when is_boolean(use_stderr) ->
+        {:ok, use_stderr}
+
+      _ ->
+        {:error, ":use_stderr must be a boolean"}
+    end
   end
 
   defp normalize_stream_opts(opts) when is_list(opts) do
     with {:ok, input} <- normalize_input(opts[:input]),
          {:ok, exit_timeout} <- normalize_exit_timeout(opts[:exit_timeout]),
-         {:ok, chunk_size} <- normalize_chunk_size(opts[:chunk_size]) do
-      {:ok, %{input: input, exit_timeout: exit_timeout, chunk_size: chunk_size}}
+         {:ok, max_chunk_size} <- normalize_max_chunk_size(opts[:max_chunk_size]),
+         {:ok, use_stderr} <- normalize_use_stderr(opts[:use_stderr]) do
+      {:ok,
+       %{
+         input: input,
+         exit_timeout: exit_timeout,
+         max_chunk_size: max_chunk_size,
+         use_stderr: use_stderr
+       }}
     end
   end
 

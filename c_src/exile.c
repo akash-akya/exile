@@ -1,7 +1,3 @@
-#ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200809L
-#endif
-
 #include "erl_nif.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -12,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "utils.h"
 
 #ifdef ERTS_DIRTY_SCHEDULERS
 #define USE_DIRTY_IO ERL_NIF_DIRTY_JOB_IO_BOUND
@@ -19,37 +16,8 @@
 #define USE_DIRTY_IO 0
 #endif
 
-// #define DEBUG
-
-#ifdef DEBUG
-#define debug(...)                                                             \
-  do {                                                                         \
-    enif_fprintf(stderr, "%s:%d\t(fn \"%s\")  - ", __FILE__, __LINE__,         \
-                 __func__);                                                    \
-    enif_fprintf(stderr, __VA_ARGS__);                                         \
-    enif_fprintf(stderr, "\n");                                                \
-  } while (0)
-#else
-#define debug(...)
-#endif
-
-#define error(...)                                                             \
-  do {                                                                         \
-    enif_fprintf(stderr, "%s:%d\t(fn: \"%s\")  - ", __FILE__, __LINE__,        \
-                 __func__);                                                    \
-    enif_fprintf(stderr, __VA_ARGS__);                                         \
-    enif_fprintf(stderr, "\n");                                                \
-  } while (0)
-
-#define assert_argc(argc, count)                                               \
-  if (argc != count) {                                                         \
-    error("number of arguments must be %d", count);                            \
-    return enif_make_badarg(env);                                              \
-  }
-
 static const int UNBUFFERED_READ = -1;
 static const int PIPE_BUF_SIZE = 65535;
-
 static const int FD_CLOSED = -1;
 
 static ERL_NIF_TERM ATOM_TRUE;
@@ -138,7 +106,7 @@ static int select_write(ErlNifEnv *env, int *fd) {
 
 static ERL_NIF_TERM nif_write(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  assert_argc(argc, 2);
+  ASSERT_ARGC(argc, 2);
 
   ErlNifTime start;
   ssize_t size;
@@ -192,7 +160,7 @@ static int select_read(ErlNifEnv *env, int *fd) {
 
 static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
                                   const ERL_NIF_TERM argv[]) {
-  assert_argc(argc, 1);
+  ASSERT_ARGC(argc, 1);
 
   ERL_NIF_TERM term;
   ErlNifPid pid;
@@ -224,39 +192,23 @@ static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
 
   return make_ok(env, term);
 
-error_exit:
+ error_exit:
   enif_release_resource(fd);
   return ATOM_ERROR;
 }
 
-static ERL_NIF_TERM nif_read(ErlNifEnv *env, int argc,
-                             const ERL_NIF_TERM argv[]) {
-  assert_argc(argc, 2);
-
-  ErlNifTime start;
-  int size, demand;
-  int *fd;
-
-  start = enif_monotonic_time(ERL_NIF_USEC);
-
-  if (!enif_get_resource(env, argv[0], FD_RT, (void **)&fd))
-    return make_error(env, ATOM_INVALID_FD);
-
-  if (!enif_get_int(env, argv[1], &demand))
+static ERL_NIF_TERM read_fd(ErlNifEnv *env, int *fd, int max_size) {
+  if (max_size == UNBUFFERED_READ) {
+    max_size = PIPE_BUF_SIZE;
+  } else if (max_size < 1) {
     return enif_make_badarg(env);
-
-  size = demand;
-
-  if (demand == UNBUFFERED_READ) {
-    size = PIPE_BUF_SIZE;
-  } else if (demand < 1) {
-    return enif_make_badarg(env);
-  } else if (demand > PIPE_BUF_SIZE) {
-    size = PIPE_BUF_SIZE;
+  } else if (max_size > PIPE_BUF_SIZE) {
+    max_size = PIPE_BUF_SIZE;
   }
 
-  unsigned char buf[size];
-  ssize_t result = read(*fd, buf, size);
+  ErlNifTime start = enif_monotonic_time(ERL_NIF_USEC);
+  unsigned char buf[max_size];
+  ssize_t result = read(*fd, buf, max_size);
   int read_errno = errno;
 
   ERL_NIF_TERM bin_term = 0;
@@ -269,32 +221,37 @@ static ERL_NIF_TERM nif_read(ErlNifEnv *env, int argc,
   notify_consumed_timeslice(env, start, enif_monotonic_time(ERL_NIF_USEC));
 
   if (result >= 0) {
-    /* we do not 'select' if demand completely satisfied OR EOF OR its
-     * UNBUFFERED_READ */
-    if (result == demand || result == 0 || demand == UNBUFFERED_READ) {
-      return make_ok(env, bin_term);
-    } else { // demand partially satisfied
-      int retval = select_read(env, fd);
-      if (retval != 0)
-        return make_error(env, enif_make_int(env, retval));
-      return make_ok(env, bin_term);
-    }
+    return make_ok(env, bin_term);
+  } else if (read_errno == EAGAIN || read_errno == EWOULDBLOCK) { // busy
+    int retval = select_read(env, fd);
+    if (retval != 0)
+      return make_error(env, enif_make_int(env, retval));
+    return make_error(env, ATOM_EAGAIN);
   } else {
-    if (read_errno == EAGAIN || read_errno == EWOULDBLOCK) { // busy
-      int retval = select_read(env, fd);
-      if (retval != 0)
-        return make_error(env, enif_make_int(env, retval));
-      return make_error(env, ATOM_EAGAIN);
-    } else {
-      perror("read()");
-      return make_error(env, enif_make_int(env, read_errno));
-    }
+    perror("read_fd()");
+    return make_error(env, enif_make_int(env, read_errno));
   }
+}
+
+static ERL_NIF_TERM nif_read(ErlNifEnv *env, int argc,
+                             const ERL_NIF_TERM argv[]) {
+  ASSERT_ARGC(argc, 2);
+
+  int max_size;
+  int *fd;
+
+  if (!enif_get_resource(env, argv[0], FD_RT, (void **)&fd))
+    return make_error(env, ATOM_INVALID_FD);
+
+  if (!enif_get_int(env, argv[1], &max_size))
+    return enif_make_badarg(env);
+
+  return read_fd(env, fd, max_size);
 }
 
 static ERL_NIF_TERM nif_close(ErlNifEnv *env, int argc,
                               const ERL_NIF_TERM argv[]) {
-  assert_argc(argc, 1);
+  ASSERT_ARGC(argc, 1);
 
   int *fd;
 
@@ -311,7 +268,7 @@ static ERL_NIF_TERM nif_close(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM nif_is_os_pid_alive(ErlNifEnv *env, int argc,
                                         const ERL_NIF_TERM argv[]) {
-  assert_argc(argc, 1);
+  ASSERT_ARGC(argc, 1);
 
   pid_t pid;
 
@@ -328,7 +285,7 @@ static ERL_NIF_TERM nif_is_os_pid_alive(ErlNifEnv *env, int argc,
 
 static ERL_NIF_TERM nif_kill(ErlNifEnv *env, int argc,
                              const ERL_NIF_TERM argv[]) {
-  assert_argc(argc, 2);
+  ASSERT_ARGC(argc, 2);
 
   pid_t pid;
   int ret;
