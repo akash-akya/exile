@@ -10,7 +10,7 @@ Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_vid
 |> Stream.run()
 ```
 
-`Exile.stream!` is a convenience wrapper around `Exile.Process`. If you want more control over stdin, stdout, and os process use `Exile.Process` directly.
+`Exile.stream!` is a convenience wrapper around `Exile.Process`. Prefer using `Exile.stream!` over using `Exile.Process` directly.
 
 Exile requires OTP v22.1 and above.
 
@@ -50,16 +50,16 @@ Internally Exile uses non-blocking asynchronous system calls to interact with th
 **Highlights**
 
 * Back pressure
-* it does not use any middleware program
-  * no additional os process. no performance/resource cost
+* no middleware program
+  * no additional os process. No performance/resource cost
   * no need to install any external command
-* tries to handle zombie process by attempting to cleanup external process. *But* as there is no middleware involved with exile so it is still possbile to endup with zombie process
+* tries to handle zombie process by attempting to clean up external process. *But* as there is no middleware involved with exile, so it is still possible to endup with zombie process if program misbehave.
 * stream abstraction
-* selectively consume stdout and stderr
+* selectively consume stdout and stderr streams
 
 If you are running executing huge number of external programs **concurrently** (more than few hundred) you might have to increase open file descriptors limit (`ulimit -n`)
 
-Non-blocking io can be used for other interesting things. Such as reading named pipe (FIFO) files. `Exile.stream!(~w(cat data.pipe))` does not block schedulers so you can open hundreds of fifo files unlike default `file` based io.
+Non-blocking io can be used for other interesting things. Such as reading named pipe (FIFO) files. `Exile.stream!(~w(cat data.pipe))` does not block schedulers, so you can open hundreds of fifo files unlike default `file` based io.
 
 #### TODO
 

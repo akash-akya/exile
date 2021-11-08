@@ -2,13 +2,14 @@ defmodule Exile.Process do
   @moduledoc """
   GenServer which wraps spawned external command.
 
-  `Exile.stream!/1` should be preferred over this. Use this only if you need more control over the life-cycle of IO streams and OS process.
+  `Exile.stream!/1` should be preferred over using this. Use this only if you need more control over the life-cycle of IO streams and OS process.
 
   ## Comparison with Port
 
     * it is demand driven. User explicitly has to `read` the command output, and the progress of the external command is controlled using OS pipes. Exile never load more output than we can consume, so we should never experience memory issues
     * it can close stdin while consuming output
     * tries to handle zombie process by attempting to cleanup external process. Note that there is no middleware involved with exile so it is still possbile to endup with zombie process.
+    * selectively consume stdout and stderr streams
 
   Internally Exile uses non-blocking asynchronous system calls to interact with the external process. It does not use port's message based communication, instead uses raw stdio and NIF. Uses asynchronous system calls for IO. Most of the system calls are non-blocking, so it should not block the beam schedulers. Make use of dirty-schedulers for IO
   """
@@ -59,7 +60,8 @@ defmodule Exile.Process do
   @type process :: pid
   @spec start_link(nonempty_list(String.t()),
           cd: String.t(),
-          env: [{String.t(), String.t()}]
+          env: [{String.t(), String.t()}],
+          use_stderr: boolean()
         ) :: {:ok, process} | {:error, any()}
   def start_link(cmd_with_args, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
@@ -138,7 +140,7 @@ defmodule Exile.Process do
   end
 
   @doc """
-  Returns os pid of the command
+  Returns OS pid of the command
   """
   @spec os_pid(process) :: pos_integer()
   def os_pid(process) do
