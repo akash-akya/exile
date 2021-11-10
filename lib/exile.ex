@@ -66,18 +66,30 @@ defmodule Exile do
   Stream with stderr
 
   ```
-  script = \"""
-  for i in {1..10}; do
-    echo "foo ${i}"
-    echo "bar ${i}" >&2
-  done
-  \"""
+  Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1),
+    input: File.stream!("music_video.mkv", [], 65535),
+    use_stderr: true
+  )
+  |> Stream.transform(
+    fn ->
+      File.open!("music.mp3", [:write, :binary])
+    end,
+    fn elem, file ->
+      case elem do
+        {:stdout, data} ->
+          :ok = IO.binwrite(file, data)
 
-  Exile.stream!(["sh", "-c", script], use_stderr: true)
-  |> Enum.each(fn {stream, lines} ->
-    String.split(lines, "\\n", trim: true)
-    |> Enum.each(fn line -> IO.puts("\#{stream}: \#{line}") end)
-  end)
+        {:stderr, msg} ->
+          :ok = IO.write(msg)
+      end
+
+      {[], file}
+    end,
+    fn file ->
+      :ok = File.close(file)
+    end
+  )
+  |> Stream.run()
   ```
   """
   @type collectable_func() :: (Collectable.t() -> any())

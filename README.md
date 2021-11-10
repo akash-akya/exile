@@ -10,6 +10,8 @@ Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_vid
 |> Stream.run()
 ```
 
+See `Exile.stream!/2` module doc for more details about handling stderr and other options.
+
 `Exile.stream!/2` is a convenience wrapper around `Exile.Process`. Prefer using `Exile.stream!` over using `Exile.Process` directly.
 
 Exile requires OTP v22.1 and above.
