@@ -185,14 +185,6 @@ defmodule Exile.Process do
   def handle_call(:stop, _from, state) do
     # TODO: pending write and read should receive "stopped" return
     # value instead of exit signal
-    case state.status do
-      {:exit, _} ->
-        :ok
-
-      _ ->
-        Port.close(state.port)
-    end
-
     {:stop, :normal, :ok, state}
   end
 
