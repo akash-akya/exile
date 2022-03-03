@@ -132,7 +132,7 @@ defmodule Exile.ProcessTest do
     Process.stop(s)
   end
 
-  test "stderr_any" do
+  test "read_any" do
     script = """
     echo "foo"
     echo "bar" >&2
@@ -149,7 +149,7 @@ defmodule Exile.ProcessTest do
     Process.stop(s)
   end
 
-  test "stderr_any with stderr disabled" do
+  test "read_any with stderr disabled" do
     script = """
     echo "foo"
     echo "bar" >&2
