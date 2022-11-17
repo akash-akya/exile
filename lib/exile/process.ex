@@ -324,7 +324,7 @@ defmodule Exile.Process do
       end
     end)
 
-    {:noreply, %Process{state | status: {:exit, exit_status}}, await: %{}}
+    {:noreply, %Process{state | status: {:exit, exit_status}, await: %{}}}
   end
 
   defmacrop eof, do: {:ok, <<>>}
