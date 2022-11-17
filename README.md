@@ -1,5 +1,9 @@
 # Exile
 
+[![CI](https://github.com/akash-akya/exile/actions/workflows/ci.yaml/badge.svg)](https://github.com/akash-akya/exile/actions/workflows/ci.yaml)
+[![Hex.pm](https://img.shields.io/hexpm/v/exile.svg)](https://hex.pm/packages/exile)
+[![docs](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/exile/)
+
 Exile is an alternative to [ports](https://hexdocs.pm/elixir/Port.html) for running external programs. It provides back-pressure, non-blocking io, and tries to fix ports issues.
 
 Exile is built around the idea of having demand-driven, asynchronous interaction with external process. Think of streaming a video through `ffmpeg` to serve a web request. Exile internally uses NIF. See [Rationale](#rationale) for details. It also provides stream abstraction for interacting with an external program. For example, getting audio out of a stream is as simple as
@@ -16,7 +20,17 @@ See `Exile.stream!/2` module doc for more details about handling stderr and othe
 
 Exile requires OTP v22.1 and above.
 
-**Exile is experimental and it is still work-in-progress. Exile is based on NIF, please know the implications of it before using it**
+Exile is based on NIF, please know consequence of that before using Exile. For basic use cases use [ExCmd](https://github.com/akash-akya/ex_cmd) instead.
+
+## Installation
+
+```elixir
+def deps do
+  [
+    {:exile, "~> x.x.x"}
+  ]
+end
+```
 
 ## Rationale
 
@@ -71,7 +85,7 @@ Non-blocking io can be used for other interesting things. Such as reading named 
 
 As with any NIF based solution, bugs or issues in Exile implementation **can bring down the beam VM**. But NIF implementation is comparatively small and mostly uses POSIX system calls. Also, spawned external processes are still completely isolated at OS level.
 
-If all you want is to run a command with no communication, then just sticking with `System.cmd` is a better option.
+If all you want is to run a command with no communication, then just sticking with `System.cmd` is a better.
 
 ### License
 

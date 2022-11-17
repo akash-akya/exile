@@ -1,10 +1,13 @@
 defmodule Exile.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @scm_url "https://github.com/akash-akya/exile"
+
   def project do
     [
       app: :exile,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.7",
       start_permanent: Mix.env() == :prod,
       compilers: [:elixir_make] ++ Mix.compilers(),
@@ -17,16 +20,16 @@ defmodule Exile.MixProject do
       description: description(),
 
       # Docs
-      source_url: "https://github.com/akash-akya/exile",
-      homepage_url: "https://github.com/akash-akya/exile",
+      source_url: @scm_url,
+      homepage_url: @scm_url,
       docs: [
         main: "readme",
-        extras: ["README.md"]
+        source_ref: "v#{@version}",
+        extras: ["README.md", "LICENSE.md"]
       ]
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
       mod: {Exile, []},
@@ -42,11 +45,11 @@ defmodule Exile.MixProject do
     [
       maintainers: ["Akash Hiremath"],
       licenses: ["Apache-2.0"],
-      links: %{GitHub: "https://github.com/akash-akya/exile"}
+      files: ~w(lib .formatter.exs mix.exs README* LICENSE* Makefile c_src/*.{h,c}),
+      links: %{GitHub: @scm_url}
     ]
   end
 
-  # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
       {:elixir_make, "~> 0.6", runtime: false},
