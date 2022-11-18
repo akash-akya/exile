@@ -48,7 +48,7 @@ defmodule Exile do
 
     * `exit_timeout` - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
 
-    * `max_chunk_size` - Maximum size of each iodata chunk emitted by stream. Chunk size will be variable depending on the amount of data availble at that time. Defaults to 65535
+    * `max_chunk_size` - Maximum size of each iodata chunk emitted by stream. Chunk size will be variable depending on the amount of data available at that time. Defaults to 65535
 
     * `use_stderr` - When set to true, stream will contain stderr output along with stdout output. Element of the stream will be of the form `{:stdout, iodata}` or `{:stderr, iodata}` to differentiate different streams. Defaults to false. See example below
 
