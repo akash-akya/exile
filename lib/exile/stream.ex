@@ -91,7 +91,7 @@ defmodule Exile.Stream do
 
       after_fun = fn exit_type ->
         try do
-          # always close stdin before stoping to give the command chance to exit properly
+          # always close stdin before stopping to give the command chance to exit properly
           Process.close_stdin(process)
           result = Process.await_exit(process, stream_opts.exit_timeout)
 

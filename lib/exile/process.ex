@@ -8,7 +8,7 @@ defmodule Exile.Process do
 
     * it is demand driven. User explicitly has to `read` the command output, and the progress of the external command is controlled using OS pipes. Exile never load more output than we can consume, so we should never experience memory issues
     * it can close stdin while consuming output
-    * tries to handle zombie process by attempting to cleanup external process. Note that there is no middleware involved with exile so it is still possbile to endup with zombie process.
+    * tries to handle zombie process by attempting to cleanup external process. Note that there is no middleware involved with exile so it is still possible to endup with zombie process.
     * selectively consume stdout and stderr streams
 
   Internally Exile uses non-blocking asynchronous system calls to interact with the external process. It does not use port's message based communication, instead uses raw stdio and NIF. Uses asynchronous system calls for IO. Most of the system calls are non-blocking, so it should not block the beam schedulers. Make use of dirty-schedulers for IO
@@ -96,7 +96,7 @@ defmodule Exile.Process do
   @doc """
   Returns bytes from executed command's stdout stream with maximum size `max_size`.
 
-  Blocks if no bytes are written to stdout stream yet. And returns as soon as bytes are availble
+  Blocks if no bytes are written to stdout stream yet. And returns as soon as bytes are available
   """
   @spec read(process, pos_integer()) :: {:ok, iodata} | :eof | {:error, any()}
   def read(process, max_size \\ @default_buffer_size)
@@ -107,7 +107,7 @@ defmodule Exile.Process do
   @doc """
   Returns bytes from executed command's stderr stream with maximum size `max_size`.
 
-  Blocks if no bytes are written to stdout stream yet. And returns as soon as bytes are availble
+  Blocks if no bytes are written to stdout stream yet. And returns as soon as bytes are available
   """
   @spec read_stderr(process, pos_integer()) :: {:ok, iodata} | :eof | {:error, any()}
   def read_stderr(process, size \\ @default_buffer_size) when is_integer(size) and size > 0 do
@@ -115,9 +115,9 @@ defmodule Exile.Process do
   end
 
   @doc """
-  Returns bytes from either stdout or stderr stream with maximum size `max_size` whichever is availble.
+  Returns bytes from either stdout or stderr stream with maximum size `max_size` whichever is available.
 
-  Blocks if no bytes are written to stdout/stderr stream yet. And returns as soon as bytes are availble
+  Blocks if no bytes are written to stdout/stderr stream yet. And returns as soon as bytes are available
   """
   @spec read_any(process, pos_integer()) ::
           {:ok, {:stdout, iodata}} | {:ok, {:stderr, iodata}} | :eof | {:error, any()}
