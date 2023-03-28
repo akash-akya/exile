@@ -53,7 +53,11 @@ defmodule Exile.MixProject do
   defp deps do
     [
       {:elixir_make, "~> 0.6", runtime: false},
-      {:ex_doc, ">= 0.0.0", only: :dev}
+
+      # development & test
+      {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
+      {:ex_doc, ">= 0.0.0", only: :dev},
+      {:excoveralls, "~> 0.15", only: :test}
     ]
   end
 end
