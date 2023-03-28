@@ -50,6 +50,15 @@ defmodule ExileTest do
     assert Enum.all?(stderr_lines, &String.starts_with?(&1, "bar "))
   end
 
+  test "environment variable" do
+    output =
+      Exile.stream!(~w(printenv FOO), env: %{"FOO" => "bar"})
+      |> Enum.to_list()
+      |> IO.iodata_to_binary()
+
+    assert output == "bar\n"
+  end
+
   defp split_stream(stream) do
     {stdout, stderr} =
       Enum.reduce(stream, {[], []}, fn
