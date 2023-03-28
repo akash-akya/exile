@@ -93,7 +93,7 @@ defmodule Exile.ProcessTest do
   end
 
   test "writing binary larger than pipe buffer size" do
-    large_bin = generate_binary(5 * 65535)
+    large_bin = generate_binary(5 * 65_535)
     {:ok, s} = Process.start_link(~w(cat))
 
     writer =
@@ -115,7 +115,7 @@ defmodule Exile.ProcessTest do
 
     Task.await(writer)
 
-    assert IO.iodata_length(iodata) == 5 * 65535
+    assert IO.iodata_length(iodata) == 5 * 65_535
     assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
     Process.stop(s)
   end
@@ -170,7 +170,7 @@ defmodule Exile.ProcessTest do
     # we test backpressure by testing if `write` is delayed when we delay read
     {:ok, s} = Process.start_link(~w(cat))
 
-    large_bin = generate_binary(65535 * 5)
+    large_bin = generate_binary(65_535 * 5)
 
     writer =
       Task.async(fn ->
@@ -212,7 +212,7 @@ defmodule Exile.ProcessTest do
              Enum.sum(Enum.map(write_events, fn {:write, size} -> size end))
 
     # There must be a read before write completes
-    assert hd(events) == {:read, 65535}
+    assert hd(events) == {:read, 65_535}
   end
 
   # this test does not work properly in linux

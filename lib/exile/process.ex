@@ -46,8 +46,10 @@ defmodule Exile.Process do
     defexception [:message]
   end
 
+  @type exit_status :: non_neg_integer
+
   @default_opts [env: [], use_stderr: false]
-  @default_buffer_size 65535
+  @default_buffer_size 65_535
 
   @doc """
   Starts `Exile.ProcessServer`
@@ -136,9 +138,9 @@ defmodule Exile.Process do
   @doc """
   Waits for the program to terminate.
 
-  If the program terminates before timeout, it returns `{:ok, exit_status}` else returns `:timeout`
+  If the program terminates before timeout, it returns `{:ok, {:exit, exit_status}}` else returns `:timeout`
   """
-  @spec await_exit(process, timeout: timeout()) :: {:ok, integer()} | :timeout
+  @spec await_exit(process, timeout :: timeout()) :: {:ok, {:exit, exit_status}} | :timeout
   def await_exit(process, timeout \\ :infinity) do
     GenServer.call(process, {:await_exit, timeout}, :infinity)
   end
@@ -269,7 +271,7 @@ defmodule Exile.Process do
       {:os_pid, os_pid} ->
         {:reply, {:ok, os_pid}, state}
 
-      :undefined ->
+      nil ->
         Logger.debug("Process not alive")
         {:reply, :undefined, state}
     end
@@ -472,8 +474,11 @@ defmodule Exile.Process do
 
   defp signal(port, sig) when sig in [:sigkill, :sigterm] do
     case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} -> Nif.nif_kill(os_pid, sig)
-      :undefined -> {:error, :process_not_alive}
+      {:os_pid, os_pid} ->
+        Nif.nif_kill(os_pid, sig)
+
+      nil ->
+        {:error, :process_not_alive}
     end
   end
 

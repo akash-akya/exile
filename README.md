@@ -9,7 +9,7 @@ Exile is an alternative to [ports](https://hexdocs.pm/elixir/Port.html) for runn
 Exile is built around the idea of having demand-driven, asynchronous interaction with external process. Think of streaming a video through `ffmpeg` to serve a web request. Exile internally uses NIF. See [Rationale](#rationale) for details. It also provides stream abstraction for interacting with an external program. For example, getting audio out of a stream is as simple as
 
 ``` elixir
-Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_video.mkv", [], 65535))
+Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_video.mkv", [], 65_535))
 |> Stream.into(File.stream!("music.mp3"))
 |> Stream.run()
 ```

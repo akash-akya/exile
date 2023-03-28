@@ -35,17 +35,20 @@ defmodule Exile.Stream do
   @type t :: %__MODULE__{}
 
   @doc false
+  @spec __build__(nonempty_list(String.t()), keyword()) :: t()
   def __build__(cmd_with_args, opts) do
     {stream_opts, process_opts} =
       Keyword.split(opts, [:exit_timeout, :max_chunk_size, :input, :use_stderr])
 
-    with {:ok, stream_opts} <- normalize_stream_opts(stream_opts) do
-      process_opts = Keyword.put(process_opts, :use_stderr, stream_opts[:use_stderr])
-      {:ok, process} = Process.start_link(cmd_with_args, process_opts)
-      start_input_streamer(%Sink{process: process}, stream_opts.input)
-      %Exile.Stream{process: process, stream_opts: stream_opts}
-    else
-      {:error, error} -> raise ArgumentError, message: error
+    case normalize_stream_opts(stream_opts) do
+      {:ok, stream_opts} ->
+        process_opts = Keyword.put(process_opts, :use_stderr, stream_opts[:use_stderr])
+        {:ok, process} = Process.start_link(cmd_with_args, process_opts)
+        start_input_streamer(%Sink{process: process}, stream_opts.input)
+        %Exile.Stream{process: process, stream_opts: stream_opts}
+
+      {:error, error} ->
+        raise ArgumentError, message: error
     end
   end
 
@@ -150,7 +153,7 @@ defmodule Exile.Stream do
   defp normalize_max_chunk_size(max_chunk_size) do
     case max_chunk_size do
       nil ->
-        {:ok, 65536}
+        {:ok, 65_536}
 
       max_chunk_size when is_integer(max_chunk_size) and max_chunk_size > 0 ->
         {:ok, max_chunk_size}
@@ -186,7 +189,7 @@ defmodule Exile.Stream do
     end
   end
 
-  defp normalize_stream_opts(opts) when is_list(opts) do
+  defp normalize_stream_opts(opts) do
     with {:ok, input} <- normalize_input(opts[:input]),
          {:ok, exit_timeout} <- normalize_exit_timeout(opts[:exit_timeout]),
          {:ok, max_chunk_size} <- normalize_max_chunk_size(opts[:max_chunk_size]),
@@ -200,6 +203,4 @@ defmodule Exile.Stream do
        }}
     end
   end
-
-  defp normalize_stream_opts(_), do: {:error, "stream_opts must be a keyword list"}
 end

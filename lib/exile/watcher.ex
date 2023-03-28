@@ -45,25 +45,24 @@ defmodule Exile.Watcher do
   end
 
   defp attempt_graceful_exit(os_pid) do
-    try do
-      Logger.debug(fn -> "Stopping external program" end)
+    Logger.debug(fn -> "Stopping external program" end)
 
-      # at max we wait for 100ms for program to exit
-      process_exit?(os_pid, 100) && throw(:done)
+    # at max we wait for 100ms for program to exit
+    process_exit?(os_pid, 100) && throw(:done)
 
-      Logger.debug("Failed to stop external program gracefully. attempting SIGTERM")
-      Nif.nif_kill(os_pid, :sigterm)
-      process_exit?(os_pid, 100) && throw(:done)
+    Logger.debug("Failed to stop external program gracefully. attempting SIGTERM")
+    Nif.nif_kill(os_pid, :sigterm)
+    process_exit?(os_pid, 100) && throw(:done)
 
-      Logger.debug("Failed to stop external program with SIGTERM. attempting SIGKILL")
-      Nif.nif_kill(os_pid, :sigkill)
-      process_exit?(os_pid, 200) && throw(:done)
+    Logger.debug("Failed to stop external program with SIGTERM. attempting SIGKILL")
+    Nif.nif_kill(os_pid, :sigkill)
+    process_exit?(os_pid, 200) && throw(:done)
 
-      Logger.error("failed to kill external process")
-      raise "Failed to kill external process"
-    catch
-      :done -> Logger.debug(fn -> "External program exited successfully" end)
-    end
+    Logger.error("failed to kill external process")
+    raise "Failed to kill external process"
+  catch
+    :done ->
+      Logger.debug(fn -> "External program exited successfully" end)
   end
 
   defp process_exit?(os_pid), do: !Nif.nif_is_os_pid_alive(os_pid)
