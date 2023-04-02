@@ -108,7 +108,7 @@ static void close_pipes(int pipes[3][2]) {
 }
 
 static int exec_process(char const *bin, char *const *args, int socket,
-                        bool use_stderr) {
+                        bool enable_stderr) {
   int pipes[3][2] = {{0, 0}, {0, 0}, {0, 0}};
   int r_cmdin, w_cmdin, r_cmdout, w_cmdout, r_cmderr, w_cmderr;
   int i;
@@ -165,7 +165,7 @@ static int exec_process(char const *bin, char *const *args, int socket,
     _exit(FORK_EXEC_FAILURE);
   }
 
-  if (use_stderr) {
+  if (enable_stderr) {
     close(STDERR_FILENO);
     close(r_cmderr);
     if (dup2(w_cmderr, STDERR_FILENO) < 0) {
@@ -189,16 +189,16 @@ static int exec_process(char const *bin, char *const *args, int socket,
   _exit(FORK_EXEC_FAILURE);
 }
 
-static int spawn(const char *socket_path, const char *use_stderr_str,
+static int spawn(const char *socket_path, const char *enable_stderr_str,
                  const char *bin, char *const *args) {
   int socket_fd;
   struct sockaddr_un socket_addr;
-  bool use_stderr;
+  bool enable_stderr;
 
-  if (strcmp(use_stderr_str, "true") == 0) {
-    use_stderr = true;
+  if (strcmp(enable_stderr_str, "true") == 0) {
+    enable_stderr = true;
   } else {
-    use_stderr = false;
+    enable_stderr = false;
   }
 
   socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -222,7 +222,7 @@ static int spawn(const char *socket_path, const char *use_stderr_str,
 
   debug("connected to exile");
 
-  if (exec_process(bin, args, socket_fd, use_stderr) != 0)
+  if (exec_process(bin, args, socket_fd, enable_stderr) != 0)
     return EXIT_FAILURE;
 
   // we should never reach here
@@ -244,7 +244,7 @@ int main(int argc, const char *argv[]) {
 
     exec_argv[i - 3] = NULL;
 
-    debug("socket path: %s use_stderr: %s bin: %s", argv[1], argv[2], argv[3]);
+    debug("socket path: %s enable_stderr: %s bin: %s", argv[1], argv[2], argv[3]);
     status = spawn(argv[1], argv[2], argv[3], (char *const *)exec_argv);
   }
 

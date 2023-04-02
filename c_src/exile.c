@@ -28,9 +28,11 @@ static ERL_NIF_TERM ATOM_UNDEFINED;
 static ERL_NIF_TERM ATOM_INVALID_FD;
 static ERL_NIF_TERM ATOM_SELECT_CANCEL_ERROR;
 static ERL_NIF_TERM ATOM_EAGAIN;
+static ERL_NIF_TERM ATOM_EPIPE;
 
-static ERL_NIF_TERM ATOM_SIGKILL;
 static ERL_NIF_TERM ATOM_SIGTERM;
+static ERL_NIF_TERM ATOM_SIGKILL;
+static ERL_NIF_TERM ATOM_SIGPIPE;
 
 static void close_fd(int *fd) {
   if (*fd != FD_CLOSED) {
@@ -143,6 +145,8 @@ static ERL_NIF_TERM nif_write(ErlNifEnv *env, int argc,
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_error(env, ATOM_EAGAIN);
+  } else if (write_errno == EPIPE) {
+    return make_error(env, ATOM_EPIPE);
   } else {
     perror("write()");
     return make_error(env, enif_make_int(env, write_errno));
@@ -227,6 +231,8 @@ static ERL_NIF_TERM read_fd(ErlNifEnv *env, int *fd, int max_size) {
     if (retval != 0)
       return make_error(env, enif_make_int(env, retval));
     return make_error(env, ATOM_EAGAIN);
+  } else if (read_errno == EPIPE) {
+    return make_error(env, ATOM_EPIPE);
   } else {
     perror("read_fd()");
     return make_error(env, enif_make_int(env, read_errno));
@@ -298,7 +304,9 @@ static ERL_NIF_TERM nif_kill(ErlNifEnv *env, int argc,
     ret = kill(pid, SIGKILL);
   else if (enif_compare(argv[1], ATOM_SIGTERM) == 0)
     ret = kill(pid, SIGTERM);
-  else
+  else if (enif_compare(argv[1], ATOM_SIGPIPE) == 0) {
+    ret = kill(pid, SIGPIPE);
+  } else
     return enif_make_badarg(env);
 
   if (ret != 0) {
@@ -326,10 +334,12 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM load_info) {
   ATOM_UNDEFINED = enif_make_atom(env, "undefined");
   ATOM_INVALID_FD = enif_make_atom(env, "invalid_fd_resource");
   ATOM_EAGAIN = enif_make_atom(env, "eagain");
+  ATOM_EPIPE = enif_make_atom(env, "epipe");
   ATOM_SELECT_CANCEL_ERROR = enif_make_atom(env, "select_cancel_error");
 
   ATOM_SIGTERM = enif_make_atom(env, "sigterm");
   ATOM_SIGKILL = enif_make_atom(env, "sigkill");
+  ATOM_SIGPIPE = enif_make_atom(env, "sigpipe");
 
   return 0;
 }
@@ -347,5 +357,5 @@ static ErlNifFunc nif_funcs[] = {
     {"nif_is_os_pid_alive", 1, nif_is_os_pid_alive, USE_DIRTY_IO},
     {"nif_kill", 2, nif_kill, USE_DIRTY_IO}};
 
-ERL_NIF_INIT(Elixir.Exile.ProcessNif, nif_funcs, &on_load, NULL, NULL,
+ERL_NIF_INIT(Elixir.Exile.Process.Nif, nif_funcs, &on_load, NULL, NULL,
              &on_unload)

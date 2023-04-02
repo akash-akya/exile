@@ -21,8 +21,8 @@ defmodule Exile.SyncProcessTest do
     assert_in_delta before_exec, after_exec, 1024 * 1024
 
     assert :ok == Process.close_stdin(s)
-    assert {:ok, {:exit, 0}} == Process.await_exit(s, 500)
-    Process.stop(s)
+    assert {:ok, 0} == Process.await_exit(s, 500)
+    # Process.stop(s)
   end
 
   test "if watcher process exits on command exit" do
@@ -37,8 +37,8 @@ defmodule Exile.SyncProcessTest do
     assert %{active: 1, workers: 1} = DynamicSupervisor.count_children(Exile.WatcherSupervisor)
 
     Process.close_stdin(s)
-    assert {:ok, {:exit, 0}} = Process.await_exit(s, 500)
-    Process.stop(s)
+    assert {:ok, 0} = Process.await_exit(s, 500)
+    # Process.stop(s)
 
     # wait for watcher to terminate
     :timer.sleep(200)

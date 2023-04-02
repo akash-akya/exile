@@ -1,6 +1,29 @@
 defmodule Exile do
   @moduledoc """
-  Exile is an alternative for beam ports with back-pressure and non-blocking IO
+  Exile is an alternative for beam [ports](https://hexdocs.pm/elixir/Port.html)
+  with back-pressure and non-blocking IO.
+
+  ## Comparison with Port
+
+    * it is demand driven. User explicitly has to `read` the command
+  output, and the progress of the external command is controlled
+  using OS pipes. Exile never load more output than we can consume,
+  so we should never experience memory issues
+
+    * it can close stdin while consuming output
+
+    * tries to handle zombie process by attempting to cleanup
+  external process. Note that there is no middleware involved
+  with exile so it is still possible to endup with zombie process.
+
+    * selectively consume stdout and stderr
+
+  Internally Exile uses non-blocking asynchronous system calls
+  to interact with the external process. It does not use port's
+  message based communication, instead uses raw stdio and NIF.
+  Uses asynchronous system calls for IO. Most of the system
+  calls are non-blocking, so it should not block the beam
+  schedulers. Make use of dirty-schedulers for IO
   """
 
   use Application
@@ -12,15 +35,16 @@ defmodule Exile do
       strategy: :one_for_one
     ]
 
-    # we use DynamicSupervisor for cleaning up external processes on
+    # We use DynamicSupervisor for cleaning up external processes on
     # :init.stop or SIGTERM
     DynamicSupervisor.start_link(opts)
   end
 
   @doc """
-  Runs the given command with arguments and return an Enumerable to read command output.
+  Runs the command with arguments and return an Enumerable to read the output.
 
-  First parameter must be a list containing command with arguments. example: `["cat", "file.txt"]`.
+  First parameter must be a list containing command with arguments.
+  example: `["cat", "file.txt"]`.
 
   ### Options
 
@@ -37,23 +61,34 @@ defmodule Exile do
 
       * Collectable:
 
-        If the input in a function with arity 1, Exile will call that function with a `Collectable` as the argument. The function must *push* input to this collectable. Return value of the function is ignored.
+        If the input in a function with arity 1, Exile will call that function
+        with a `Collectable` as the argument. The function must *push* input to this
+        collectable. Return value of the function is ignored.
 
         ```
         Exile.stream!(~w(cat), input: fn sink -> Enum.into(1..100, sink, &to_string/1) end)
         |> Enum.to_list()
         ```
 
-      By defaults no input will be given to the command
+        By defaults no input is sent to the command
 
-    * `exit_timeout` - Duration to wait for external program to exit after completion before raising an error. Defaults to `:infinity`
+    * `exit_timeout` - Duration to wait for external program to exit after completion
+  before raising an error. Defaults to `:infinity`
 
-    * `max_chunk_size` - Maximum size of each iodata chunk emitted by stream. Chunk size will be variable depending on the amount of data available at that time. Defaults to 65_535
+    * `max_chunk_size` - Maximum size of iodata chunk emitted by the stream.
+  Chunk size can be less than the `max_chunk_size` depending on the amount of
+  data available to be read. Defaults to `65_535`
 
-    * `use_stderr` - When set to true, stream will contain stderr output along with stdout output. Element of the stream will be of the form `{:stdout, iodata}` or `{:stderr, iodata}` to differentiate different streams. Defaults to false. See example below
+    * `enable_stderr` - When set to true, output stream will contain stderr data along
+  with stdout. Stream data will be of the form `{:stdout, iodata}` or `{:stderr, iodata}`
+  to differentiate different streams. Defaults to false. See example below
 
+    * `ignore_epipe` - when set to true, `EPIPE` error during the write will be ignored.
+  This can be used to match UNIX shell default behaviour. EPIPE is the error raised
+  when the reader finishes the reading and close output pipe before command completes.
+  Defaults to `false`.
 
-  All other options are passed to `Exile.Process.start_link/2`
+  Remaining options are passed to `Exile.Process.start_link/2`
 
   ### Examples
 
@@ -68,7 +103,7 @@ defmodule Exile do
   ```
   Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1),
     input: File.stream!("music_video.mkv", [], 65_535),
-    use_stderr: true
+    enable_stderr: true
   )
   |> Stream.transform(
     fn ->
