@@ -5,8 +5,14 @@ defmodule Exile do
 
   ### Quick Start
 
-  ```
+  Read from stdout
 
+  ```
+  iex> random_data =
+  ...>   Exile.stream!(~w(cat /dev/urandom), max_chunk_size: 100, ignore_epipe: true)
+  ...>   |> Enum.take(5)
+  iex> byte_size(IO.iodata_to_binary(random_data))
+  500
   ```
 
   For more details about stream API, see `Exile.stream!`.
@@ -73,10 +79,11 @@ defmodule Exile do
   with stdout. Stream data will be of the form `{:stdout, iodata}` or `{:stderr, iodata}`
   to differentiate different streams. Defaults to false. See example below
 
-    * `ignore_epipe` - when set to true, `EPIPE` error during the write will be ignored.
-  This can be used to match UNIX shell default behaviour. EPIPE is the error raised
-  when the reader finishes the reading and close output pipe before command completes.
-  Defaults to `false`.
+    * `ignore_epipe` - When set to true, reader can exit early without raising error.
+  Typically writer gets `EPIPE` error on write when program terminate prematurely.
+  With `ignore_epipe` set to true this error will be ignored. This can be used to
+  match UNIX shell default behaviour. EPIPE is the error raised when the reader finishes
+  the reading and close output pipe before command completes. Defaults to `false`.
 
   Remaining options are passed to `Exile.Process.start_link/2`
 

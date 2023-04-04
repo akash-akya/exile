@@ -1,6 +1,8 @@
 defmodule ExileTest do
   use ExUnit.Case
 
+  doctest Exile
+
   test "stream with enumerable" do
     proc_stream =
       Exile.stream!(["cat"], input: Stream.map(1..1000, fn _ -> "a" end), enable_stderr: false)

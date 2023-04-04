@@ -116,21 +116,21 @@ defmodule Exile.Stream do
         writer_task: writer_task
       } = arg
 
-      start_fun = fn -> :normal end
+      start_fun = fn -> :premature_exit end
 
-      next_fun = fn :normal ->
+      next_fun = fn :premature_exit ->
         case Process.read_any(process, stream_opts.max_chunk_size) do
           :eof ->
-            {:halt, :normal}
+            {:halt, :normal_exit}
 
           {:ok, {:stdout, x}} when enable_stderr == false ->
-            {[IO.iodata_to_binary(x)], :normal}
+            {[IO.iodata_to_binary(x)], :premature_exit}
 
           {:ok, {stream, x}} when enable_stderr == true ->
-            {[{stream, IO.iodata_to_binary(x)}], :normal}
+            {[{stream, IO.iodata_to_binary(x)}], :premature_exit}
 
           {:error, errno} ->
-            raise Error, "Failed to read from the external process. errno: #{errno}"
+            raise Error, "failed to read from the external process. errno: #{inspect(errno)}"
         end
       end
 
@@ -139,16 +139,24 @@ defmodule Exile.Stream do
         writer_task_status = Task.await(writer_task)
 
         case {exit_type, result, writer_task_status} do
-          {:normal, {:ok, 0}, :ok} ->
+          # if reader exit early and there is a pending write
+          {:premature_exit, {:ok, _status}, {:error, :epipe}} when ignore_epipe ->
             :ok
 
-          {:normal, {:ok, _error}, {:error, :epipe}} when ignore_epipe ->
+          # if reader exit early and there is no pending write or if
+          # there is no writer
+          {:premature_exit, {:ok, _status}, :ok} when ignore_epipe ->
             :ok
 
-          {:normal, {:ok, _error}, {:error, :epipe}} ->
+          # if we get epipe from writer then raise that error, and ignore exit status
+          {:premature_exit, {:ok, _status}, {:error, :epipe}} when ignore_epipe == false ->
             raise Error, "abnormal command exit, received EPIPE while writing to stdin"
 
-          {:normal, {:ok, error}, _} ->
+          # Normal exit success case
+          {_, {:ok, 0}, _} ->
+            :ok
+
+          {:normal_exit, {:ok, error}, _} ->
             raise Error, "command exited with status: #{inspect(error)}"
         end
       end
@@ -176,7 +184,7 @@ defmodule Exile.Stream do
       is_nil(term) ->
         {:ok, :no_input}
 
-      !is_function(term) && Enumerable.impl_for(term) ->
+      !is_function(term, 1) && Enumerable.impl_for(term) ->
         {:ok, {:enumerable, term}}
 
       is_function(term, 1) ->
