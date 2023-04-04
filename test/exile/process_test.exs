@@ -4,6 +4,8 @@ defmodule Exile.ProcessTest do
   alias Exile.Process
   alias Exile.Process.{Pipe, State}
 
+  doctest Exile.Process
+
   describe "pipes" do
     test "reading from stdout" do
       {:ok, s} = Process.start_link(~w(echo test))

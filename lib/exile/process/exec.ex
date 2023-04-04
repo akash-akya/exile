@@ -2,6 +2,7 @@ defmodule Exile.Process.Exec do
   @moduledoc false
 
   alias Exile.Process.Nif
+  alias Exile.Process.Pipe
 
   @type args :: %{
           cmd_with_args: [String.t()],
@@ -52,6 +53,9 @@ defmodule Exile.Process.Exec do
     end
   end
 
+  @spec normalize_exec_args(nonempty_list(), keyword()) ::
+          {:ok, %{cmd_with_args: nonempty_list(), cd: charlist, env: env, enable_stderr: boolean}}
+          | {:error, String.t()}
   def normalize_exec_args(cmd_with_args, opts) do
     with {:ok, cmd} <- normalize_cmd(cmd_with_args),
          {:ok, args} <- normalize_cmd_args(cmd_with_args),
@@ -65,6 +69,7 @@ defmodule Exile.Process.Exec do
 
   @socket_timeout 2000
 
+  @spec receive_fds(:socket.socket(), boolean) :: {Pipe.fd(), Pipe.fd(), Pipe.fd()}
   defp receive_fds(lsock, enable_stderr) do
     {:ok, sock} = :socket.accept(lsock, @socket_timeout)
 
@@ -91,6 +96,8 @@ defmodule Exile.Process.Exec do
     end
   end
 
+  # skip type warning till we change min OTP version to 24.
+  @dialyzer {:nowarn_function, socket_bind: 2}
   defp socket_bind(sock, path) do
     case :socket.bind(sock, %{family: :local, path: path}) do
       :ok -> :ok
@@ -100,6 +107,7 @@ defmodule Exile.Process.Exec do
     end
   end
 
+  @spec socket_path() :: String.t()
   defp socket_path do
     str = :crypto.strong_rand_bytes(16) |> Base.url_encode64() |> binary_part(0, 16)
     path = Path.join(System.tmp_dir!(), str)
@@ -107,10 +115,12 @@ defmodule Exile.Process.Exec do
     path
   end
 
+  @spec prune_nils(keyword()) :: keyword()
   defp prune_nils(kv) do
     Enum.reject(kv, fn {_, v} -> is_nil(v) end)
   end
 
+  @spec normalize_cmd(nonempty_list()) :: {:ok, nonempty_list()} | {:error, binary()}
   defp normalize_cmd(arg) do
     case arg do
       [cmd | _] when is_binary(cmd) ->
@@ -128,13 +138,14 @@ defmodule Exile.Process.Exec do
   end
 
   defp normalize_cmd_args([_ | args]) do
-    if is_list(args) && Enum.all?(args, &is_binary/1) do
+    if Enum.all?(args, &is_binary/1) do
       {:ok, Enum.map(args, &to_charlist/1)}
     else
       {:error, "command arguments must be list of strings. #{inspect(args)}"}
     end
   end
 
+  @spec normalize_cd(binary) :: {:ok, charlist()} | {:error, String.t()}
   defp normalize_cd(cd) do
     case cd do
       nil ->
@@ -152,6 +163,9 @@ defmodule Exile.Process.Exec do
     end
   end
 
+  @type env :: list({String.t(), String.t()})
+
+  @spec normalize_env(env) :: {:ok, env} | {:error, String.t()}
   defp normalize_env(env) do
     case env do
       nil ->
@@ -170,6 +184,7 @@ defmodule Exile.Process.Exec do
     end
   end
 
+  @spec normalize_enable_stderr(enable_stderr :: boolean) :: {:ok, boolean} | {:error, String.t()}
   defp normalize_enable_stderr(enable_stderr) do
     case enable_stderr do
       nil ->
@@ -183,6 +198,7 @@ defmodule Exile.Process.Exec do
     end
   end
 
+  @spec validate_opts_fields(keyword) :: :ok | {:error, String.t()}
   defp validate_opts_fields(opts) do
     {_, additional_opts} = Keyword.split(opts, [:cd, :env, :enable_stderr])
 

@@ -1,29 +1,18 @@
 defmodule Exile do
-  @moduledoc """
+  @moduledoc ~S"""
   Exile is an alternative for beam [ports](https://hexdocs.pm/elixir/Port.html)
   with back-pressure and non-blocking IO.
 
-  ## Comparison with Port
+  ### Quick Start
 
-    * it is demand driven. User explicitly has to `read` the command
-  output, and the progress of the external command is controlled
-  using OS pipes. Exile never load more output than we can consume,
-  so we should never experience memory issues
+  ```
 
-    * it can close stdin while consuming output
+  ```
 
-    * tries to handle zombie process by attempting to cleanup
-  external process. Note that there is no middleware involved
-  with exile so it is still possible to endup with zombie process.
+  For more details about stream API, see `Exile.stream!`.
 
-    * selectively consume stdout and stderr
-
-  Internally Exile uses non-blocking asynchronous system calls
-  to interact with the external process. It does not use port's
-  message based communication, instead uses raw stdio and NIF.
-  Uses asynchronous system calls for IO. Most of the system
-  calls are non-blocking, so it should not block the beam
-  schedulers. Make use of dirty-schedulers for IO
+  For more details about inner working, please check `Exile.Process`
+  documentation.
   """
 
   use Application
@@ -40,11 +29,12 @@ defmodule Exile do
     DynamicSupervisor.start_link(opts)
   end
 
-  @doc """
-  Runs the command with arguments and return an Enumerable to read the output.
+  @doc ~S"""
+  Runs the command with arguments and return an the stdout as lazily
+  Enumerable stream, similar to [`Stream`](https://hexdocs.pm/elixir/Stream.html).
 
   First parameter must be a list containing command with arguments.
-  example: `["cat", "file.txt"]`.
+  Example: `["cat", "file.txt"]`.
 
   ### Options
 
@@ -70,10 +60,10 @@ defmodule Exile do
         |> Enum.to_list()
         ```
 
-        By defaults no input is sent to the command
+        By defaults no input is sent to the command.
 
     * `exit_timeout` - Duration to wait for external program to exit after completion
-  before raising an error. Defaults to `:infinity`
+  (when stream ends). Defaults to `:infinity`
 
     * `max_chunk_size` - Maximum size of iodata chunk emitted by the stream.
   Chunk size can be less than the `max_chunk_size` depending on the amount of
@@ -112,9 +102,11 @@ defmodule Exile do
     fn elem, file ->
       case elem do
         {:stdout, data} ->
+          # write stdout data to a file
           :ok = IO.binwrite(file, data)
 
         {:stderr, msg} ->
+          # write stderr output to console
           :ok = IO.write(msg)
       end
 
