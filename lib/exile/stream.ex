@@ -105,6 +105,7 @@ defmodule Exile.Stream do
   end
 
   defimpl Enumerable do
+    # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
     def reduce(arg, acc, fun) do
       %{
         process: process,

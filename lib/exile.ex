@@ -5,17 +5,105 @@ defmodule Exile do
 
   ### Quick Start
 
-  Read from stdout
+  Run a command and read from stdout
 
   ```
-  iex> random_data =
+  iex> Exile.stream!(~w(echo Hello))
+  ...> |> Enum.into("") # collect as string
+  "Hello\n"
+  ```
+
+  Run a command with list of strings as input
+
+  ```
+  iex> Exile.stream!(~w(cat), input: ["Hello", " ", "World"])
+  ...> |> Enum.into("") # collect as string
+  "Hello World"
+  ```
+
+  Run a command with input as Stream
+
+  ```
+  iex> input_stream = Stream.map(1..10, fn num -> "#{num} " end)
+  iex> Exile.stream!(~w(cat), input: input_stream)
+  ...> |> Enum.into("")
+  "1 2 3 4 5 6 7 8 9 10 "
+  ```
+
+  Run a command with input as infinite stream
+
+  ```
+  # create infinite stream
+  iex> input_stream = Stream.repeatedly(fn -> "A" end)
+  iex> binary =
+  ...>   Exile.stream!(~w(cat), input: input_stream, ignore_epipe: true) # we need to ignore epipe since we are terminating the program before the input completes
+  ...>   |> Stream.take(2) # we must limit since the input stream is infinite
+  ...>   |> Enum.into("")
+  iex> is_binary(binary)
+  true
+  iex> "AAAAA" <> _ = binary
+  ```
+
+  Run a command with input Collectable
+
+  ```
+  # Exile calls the callback with a sink where the process can push the data
+  iex> Exile.stream!(~w(cat), input: fn sink ->
+  ...>   Stream.map(1..10, fn num -> "#{num} " end)
+  ...>   |> Stream.into(sink) # push to the external process
+  ...>   |> Stream.run()
+  ...> end)
+  ...> |> Stream.take(100) # we must limit since the input stream is infinite
+  ...> |> Enum.into("")
+  "1 2 3 4 5 6 7 8 9 10 "
+  ```
+
+  When the command wait for the input stream to close
+
+  ```
+  # base64 command wait for the input to close and writes data to stdout at once
+  iex> Exile.stream!(~w(base64), input: ["abcdef"])
+  ...> |> Enum.into("")
+  "YWJjZGVm\n"
+  ```
+
+  When the command exit with an error
+
+  ```
+  iex> Exile.stream!(["sh", "-c", "exit 4"])
+  ...> |> Enum.into("")
+  ** (Exile.Process.Error) command exited with status: 4
+  ```
+
+  With `max_chunk_size` set
+
+  ```
+  iex> data =
   ...>   Exile.stream!(~w(cat /dev/urandom), max_chunk_size: 100, ignore_epipe: true)
-  ...>   |> Enum.take(5)
-  iex> byte_size(IO.iodata_to_binary(random_data))
+  ...>   |> Stream.take(5)
+  ...>   |> Enum.into("")
+  iex> byte_size(data)
   500
   ```
 
-  For more details about stream API, see `Exile.stream!`.
+  When input and output run at different rate
+
+  ```
+  iex> input_stream = Stream.map(1..1000, fn num -> "X #{num} X\n" end)
+  iex> Exile.stream!(~w(grep 250), input: input_stream)
+  ...> |> Enum.into("")
+  "X 250 X\n"
+  ```
+
+  With stderr enabled
+
+  ```
+  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], enable_stderr: true)
+  ...> |> Enum.to_list()
+  [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
+  ```
+
+  For more details about stream API, see `Exile.stream!/2`.
 
   For more details about inner working, please check `Exile.Process`
   documentation.
