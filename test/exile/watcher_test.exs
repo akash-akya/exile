@@ -2,46 +2,38 @@ defmodule Exile.WatcherTest do
   use ExUnit.Case, async: true
   alias Exile.Process
 
-  test "uds path socket cleanup after successful exit" do
+  test "when exile process exit normally" do
     {:ok, s} = Process.start_link(~w(cat))
-    %{socket_path: socket_path} = :sys.get_state(s)
-
-    assert File.exists?(socket_path)
-
-    :ok = Process.close_stdin(s)
-    Elixir.Process.sleep(100)
-
-    {:ok, {:exit, 0}} = Process.await_exit(s)
-    :ok = Process.stop(s)
-
-    Elixir.Process.sleep(100)
-
-    refute File.exists?(socket_path)
-  end
-
-  test "external process and uds path cleanup on error" do
-    {:ok, s} = Process.start_link(~w(cat))
-    %{socket_path: socket_path} = :sys.get_state(s)
     {:ok, os_pid} = Process.os_pid(s)
 
-    assert File.exists?(socket_path)
     assert os_process_alive?(os_pid)
 
-    Elixir.Process.exit(s, :kill)
-    Elixir.Process.sleep(100)
+    {:ok, 0} = Process.await_exit(s)
 
-    refute File.exists?(socket_path)
     refute os_process_alive?(os_pid)
   end
 
-  test "if external process is killed with SIGTERM" do
-    {:ok, s} = Process.start_link([fixture("ignore_sigterm.sh")])
+  test "if external process is cleaned up when Exile Process is killed" do
+    parent = self()
 
-    {:ok, os_pid} = Process.os_pid(s)
-    assert os_process_alive?(os_pid)
-    Process.stop(s)
+    # Exile process is linked to caller so we must run test this in
+    # separate process which is not linked
+    spawn(fn ->
+      {:ok, s} = Process.start_link([fixture("ignore_sigterm.sh")])
+      {:ok, os_pid} = Process.os_pid(s)
+      assert os_process_alive?(os_pid)
+      send(parent, os_pid)
+
+      Elixir.Process.exit(s.pid, :kill)
+    end)
+
+    os_pid =
+      receive do
+        os_pid -> os_pid
+      end
 
     :timer.sleep(1000)
+
     refute os_process_alive?(os_pid)
   end
 

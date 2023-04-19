@@ -1,11 +1,13 @@
 defmodule ExileTest do
   use ExUnit.Case
 
+  doctest Exile
+
   test "stream with enumerable" do
     proc_stream =
-      Exile.stream!(["cat"], input: Stream.map(1..1000, fn _ -> "a" end), use_stderr: false)
+      Exile.stream!(["cat"], input: Stream.map(1..1000, fn _ -> "a" end), enable_stderr: false)
 
-    stdout = Enum.to_list(proc_stream)
+    stdout = proc_stream |> Enum.to_list()
     assert IO.iodata_length(stdout) == 1000
   end
 
@@ -24,7 +26,7 @@ defmodule ExileTest do
   end
 
   test "stderr" do
-    proc_stream = Exile.stream!(["sh", "-c", "echo foo >>/dev/stderr"], use_stderr: true)
+    proc_stream = Exile.stream!(["sh", "-c", "echo foo >>/dev/stderr"], enable_stderr: true)
 
     assert {[], stderr} = split_stream(proc_stream)
     assert IO.iodata_to_binary(stderr) == "foo\n"
@@ -38,7 +40,7 @@ defmodule ExileTest do
     done
     """
 
-    proc_stream = Exile.stream!(["sh", "-c", script], use_stderr: true)
+    proc_stream = Exile.stream!(["sh", "-c", script], enable_stderr: true)
 
     {stdout, stderr} = split_stream(proc_stream)
 
@@ -48,6 +50,34 @@ defmodule ExileTest do
     assert length(stdout_lines) == length(stderr_lines)
     assert Enum.all?(stdout_lines, &String.starts_with?(&1, "foo "))
     assert Enum.all?(stderr_lines, &String.starts_with?(&1, "bar "))
+  end
+
+  test "environment variable" do
+    output =
+      Exile.stream!(~w(printenv FOO), env: %{"FOO" => "bar"})
+      |> Enum.to_list()
+      |> IO.iodata_to_binary()
+
+    assert output == "bar\n"
+  end
+
+  test "premature stream termination" do
+    input_stream = Stream.map(1..100_000, fn _ -> "hello" end)
+
+    assert_raise Exile.Process.Error,
+                 "abnormal command exit, received EPIPE while writing to stdin",
+                 fn ->
+                   Exile.stream!(~w(cat), input: input_stream)
+                   |> Enum.take(1)
+                 end
+  end
+
+  test "premature stream termination when ignore_epipe is true" do
+    input_stream = Stream.map(1..100_000, fn _ -> "hello" end)
+
+    assert ["hello"] ==
+             Exile.stream!(~w(cat), input: input_stream, ignore_epipe: true, max_chunk_size: 5)
+             |> Enum.take(1)
   end
 
   defp split_stream(stream) do
