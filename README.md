@@ -38,7 +38,7 @@ end
 
   Run a command and read from stdout
 
-  ```
+  ```elixir
   iex> Exile.stream!(~w(echo Hello))
   ...> |> Enum.into("") # collect as string
   "Hello\n"
@@ -46,7 +46,7 @@ end
 
   Run a command with list of strings as input
 
-  ```
+  ```elixir
   iex> Exile.stream!(~w(cat), input: ["Hello", " ", "World"])
   ...> |> Enum.into("") # collect as string
   "Hello World"
@@ -54,7 +54,7 @@ end
 
   Run a command with input as Stream
 
-  ```
+  ```elixir
   iex> input_stream = Stream.map(1..10, fn num -> "#{num} " end)
   iex> Exile.stream!(~w(cat), input: input_stream)
   ...> |> Enum.into("")
@@ -63,7 +63,7 @@ end
 
   Run a command with input as infinite stream
 
-  ```
+  ```elixir
   # create infinite stream
   iex> input_stream = Stream.repeatedly(fn -> "A" end)
   iex> binary =
@@ -77,7 +77,7 @@ end
 
   Run a command with input Collectable
 
-  ```
+  ```elixir
   # Exile calls the callback with a sink where the process can push the data
   iex> Exile.stream!(~w(cat), input: fn sink ->
   ...>   Stream.map(1..10, fn num -> "#{num} " end)
@@ -91,7 +91,7 @@ end
 
   When the command wait for the input stream to close
 
-  ```
+  ```elixir
   # base64 command wait for the input to close and writes data to stdout at once
   iex> Exile.stream!(~w(base64), input: ["abcdef"])
   ...> |> Enum.into("")
@@ -100,7 +100,7 @@ end
 
   When the command exit with an error
 
-  ```
+  ```elixir
   iex> Exile.stream!(["sh", "-c", "exit 4"])
   ...> |> Enum.into("")
   ** (Exile.Process.Error) command exited with status: 4
@@ -108,7 +108,7 @@ end
 
   With `max_chunk_size` set
 
-  ```
+  ```elixir
   iex> data =
   ...>   Exile.stream!(~w(cat /dev/urandom), max_chunk_size: 100, ignore_epipe: true)
   ...>   |> Stream.take(5)
@@ -119,7 +119,7 @@ end
 
   When input and output run at different rate
 
-  ```
+  ```elixir
   iex> input_stream = Stream.map(1..1000, fn num -> "X #{num} X\n" end)
   iex> Exile.stream!(~w(grep 250), input: input_stream)
   ...> |> Enum.into("")
@@ -128,7 +128,7 @@ end
 
   With stderr enabled
 
-  ```
+  ```elixir
   iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], enable_stderr: true)
   ...> |> Enum.to_list()
   [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
