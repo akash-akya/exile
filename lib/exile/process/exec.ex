@@ -65,8 +65,8 @@ defmodule Exile.Process.Exec do
     end
   end
 
-  @spec spawner_path() :: String.t()
-  defp spawner_path() do
+  @spec spawner_path :: String.t()
+  defp spawner_path do
     :filename.join(:code.priv_dir(:exile), "spawner")
   end
 
