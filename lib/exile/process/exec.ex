@@ -10,8 +10,6 @@ defmodule Exile.Process.Exec do
           env: [{String.t(), String.t()}]
         }
 
-  @spawner_path :filename.join(:code.priv_dir(:exile), "spawner")
-
   @spec start(args, boolean()) :: %{
           port: port,
           stdin: non_neg_integer(),
@@ -39,7 +37,7 @@ defmodule Exile.Process.Exec do
         [:nouse_stdio, :exit_status, :binary, args: spawner_cmdline_args] ++
           prune_nils(env: env, cd: cd)
 
-      port = Port.open({:spawn_executable, @spawner_path}, port_opts)
+      port = Port.open({:spawn_executable, spawner_path()}, port_opts)
 
       {:os_pid, os_pid} = Port.info(port, :os_pid)
       Exile.Watcher.watch(self(), os_pid, socket_path)
@@ -65,6 +63,11 @@ defmodule Exile.Process.Exec do
          {:ok, env} <- normalize_env(opts[:env]) do
       {:ok, %{cmd_with_args: [cmd | args], cd: cd, env: env, enable_stderr: enable_stderr}}
     end
+  end
+
+  @spec spawner_path() :: String.t()
+  defp spawner_path() do
+    :filename.join(:code.priv_dir(:exile), "spawner")
   end
 
   @socket_timeout 2000
