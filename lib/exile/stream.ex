@@ -41,10 +41,14 @@ defmodule Exile.Stream do
     end
   end
 
-  defstruct [:process, :stream_opts, :writer_task]
+  defstruct [:stream_opts, :process_opts, :cmd_with_args]
 
   @typedoc "Struct members are private, do not depend on them"
-  @type t :: %__MODULE__{process: Process.t(), stream_opts: map, writer_task: Task.t()}
+  @type t :: %__MODULE__{
+          stream_opts: map(),
+          process_opts: keyword(),
+          cmd_with_args: [String.t()]
+        }
 
   @doc false
   @spec __build__(nonempty_list(String.t()), keyword()) :: t()
@@ -54,88 +58,56 @@ defmodule Exile.Stream do
 
     case normalize_stream_opts(stream_opts) do
       {:ok, stream_opts} ->
-        process_opts = Keyword.put(process_opts, :enable_stderr, stream_opts[:enable_stderr])
-        {:ok, process} = Process.start_link(cmd_with_args, process_opts)
-
-        writer_task =
-          start_input_streamer(
-            %Sink{process: process, ignore_epipe: stream_opts[:ignore_epipe]},
-            stream_opts.input
-          )
-
-        %Exile.Stream{process: process, stream_opts: stream_opts, writer_task: writer_task}
+        %Exile.Stream{
+          stream_opts: stream_opts,
+          process_opts: process_opts,
+          cmd_with_args: cmd_with_args
+        }
 
       {:error, error} ->
         raise ArgumentError, message: error
     end
   end
 
-  @doc false
-  @spec start_input_streamer(term, term) :: Task.t()
-  defp start_input_streamer(%Sink{process: process} = sink, input) do
-    case input do
-      :no_input ->
-        # use `Task.completed(:ok)` when bumping min Elixir requirement
-        Task.async(fn -> :ok end)
-
-      {:enumerable, enum} ->
-        Task.async(fn ->
-          Process.change_pipe_owner(process, :stdin, self())
-
-          try do
-            Enum.into(enum, sink)
-          rescue
-            Error ->
-              {:error, :epipe}
-          end
-        end)
-
-      {:collectable, func} ->
-        Task.async(fn ->
-          Process.change_pipe_owner(process, :stdin, self())
-
-          try do
-            func.(sink)
-          rescue
-            Error ->
-              {:error, :epipe}
-          end
-        end)
-    end
-  end
-
   defimpl Enumerable do
     # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
     def reduce(arg, acc, fun) do
-      %{
-        process: process,
-        stream_opts:
-          %{
-            enable_stderr: enable_stderr,
-            ignore_epipe: ignore_epipe
-          } = stream_opts,
-        writer_task: writer_task
-      } = arg
+      start_fun = fn ->
+        state = start_process(arg)
+        {state, :premature_exit}
+      end
 
-      start_fun = fn -> :premature_exit end
+      next_fun = fn {state, :premature_exit} ->
+        %{
+          process: process,
+          stream_opts: %{enable_stderr: enable_stderr} = stream_opts
+        } = state
 
-      next_fun = fn :premature_exit ->
         case Process.read_any(process, stream_opts.max_chunk_size) do
           :eof ->
-            {:halt, :normal_exit}
+            {:halt, {state, :normal_exit}}
 
           {:ok, {:stdout, x}} when enable_stderr == false ->
-            {[IO.iodata_to_binary(x)], :premature_exit}
+            {[IO.iodata_to_binary(x)], {state, :premature_exit}}
 
-          {:ok, {stream, x}} when enable_stderr == true ->
-            {[{stream, IO.iodata_to_binary(x)}], :premature_exit}
+          {:ok, {io_stream, x}} when enable_stderr == true ->
+            {[{io_stream, IO.iodata_to_binary(x)}], {state, :premature_exit}}
 
           {:error, errno} ->
             raise Error, "failed to read from the external process. errno: #{inspect(errno)}"
         end
       end
 
-      after_fun = fn exit_type ->
+      after_fun = fn {state, exit_type} ->
+        %{
+          process: process,
+          stream_opts:
+            %{
+              ignore_epipe: ignore_epipe
+            } = stream_opts,
+          writer_task: writer_task
+        } = state
+
         result = Process.await_exit(process, stream_opts.exit_timeout)
         writer_task_status = Task.await(writer_task)
 
@@ -175,6 +147,53 @@ defmodule Exile.Stream do
 
     def slice(_stream) do
       {:error, __MODULE__}
+    end
+
+    defp start_process(%Exile.Stream{
+           process_opts: process_opts,
+           stream_opts: stream_opts,
+           cmd_with_args: cmd_with_args
+         }) do
+      process_opts = Keyword.put(process_opts, :enable_stderr, stream_opts[:enable_stderr])
+      {:ok, process} = Process.start_link(cmd_with_args, process_opts)
+      sink = %Sink{process: process, ignore_epipe: stream_opts[:ignore_epipe]}
+      writer_task = start_input_streamer(sink, stream_opts.input)
+
+      %{process: process, stream_opts: stream_opts, writer_task: writer_task}
+    end
+
+    @doc false
+    @spec start_input_streamer(term, term) :: Task.t()
+    defp start_input_streamer(%Sink{process: process} = sink, input) do
+      case input do
+        :no_input ->
+          # use `Task.completed(:ok)` when bumping min Elixir requirement
+          Task.async(fn -> :ok end)
+
+        {:enumerable, enum} ->
+          Task.async(fn ->
+            Process.change_pipe_owner(process, :stdin, self())
+
+            try do
+              Enum.into(enum, sink)
+            rescue
+              Error ->
+                {:error, :epipe}
+            end
+          end)
+
+        {:collectable, func} ->
+          Task.async(fn ->
+            Process.change_pipe_owner(process, :stdin, self())
+
+            try do
+              func.(sink)
+            rescue
+              Error ->
+                {:error, :epipe}
+            end
+          end)
+      end
     end
   end
 

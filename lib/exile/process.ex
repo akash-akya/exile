@@ -511,6 +511,7 @@ defmodule Exile.Process do
 
     receive do
       {^exit_ref, exit_status} ->
+        Process.demonitor(monitor_ref, [:flush])
         exit_status
 
       {:DOWN, ^monitor_ref, _, _proc, reason} ->
