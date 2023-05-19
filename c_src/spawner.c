@@ -9,7 +9,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// these definitions are Linux only at the moment
 #ifndef CMSG_LEN
 socklen_t CMSG_LEN(size_t len) {
   return (CMSG_DATA((struct cmsghdr *)NULL) - (unsigned char *)NULL) + len;

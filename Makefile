@@ -3,7 +3,9 @@ calling_from_make:
 
 UNAME := $(shell uname)
 
-CFLAGS ?= -D_POSIX_C_SOURCE=200809L -Wall -Werror -Wno-unused-parameter -pedantic -std=c99 -O2 -fsanitize=undefined
+CFLAGS ?= -D_POSIX_C_SOURCE=200809L -Wall -Werror \
+		  -Wno-unused-parameter -Wno-gnu-null-pointer-arithmetic \
+		  -pedantic -std=c99 -O2 -fsanitize=undefined
 
 ifeq ($(UNAME), Darwin)
 	TARGET_CFLAGS ?= -fPIC -undefined dynamic_lookup -dynamiclib -Wextra
