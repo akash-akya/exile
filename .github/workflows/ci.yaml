@@ -46,6 +46,19 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix test --exclude skip:true --trace
 
+  macos-test:
+    runs-on: macos-11
+    name: Test - Elixir (MacOS)
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install erlang and elixir
+        run: |
+          brew install erlang elixir
+          mix local.hex --force
+          mix local.rebar --force
+      - run: mix deps.get
+      - run: mix test --trace
+
   lint:
     runs-on: ubuntu-22.04
     name: Lint
