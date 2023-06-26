@@ -219,6 +219,8 @@ defmodule Exile do
   @spec stream!(nonempty_list(String.t()),
           input: Enum.t() | collectable_func(),
           exit_timeout: timeout(),
+          enable_stderr: boolean(),
+          ignore_epipe: boolean(),
           max_chunk_size: pos_integer()
         ) :: Exile.Stream.t()
   def stream!(cmd_with_args, opts \\ []) do
