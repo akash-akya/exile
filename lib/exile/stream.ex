@@ -50,11 +50,19 @@ defmodule Exile.Stream do
           cmd_with_args: [String.t()]
         }
 
+  @stream_opts [
+    :exit_timeout,
+    :max_chunk_size,
+    :input,
+    :enable_stderr,
+    :ignore_epipe,
+    :stream_exit_status
+  ]
+
   @doc false
   @spec __build__(nonempty_list(String.t()), keyword()) :: t()
   def __build__(cmd_with_args, opts) do
-    {stream_opts, process_opts} =
-      Keyword.split(opts, [:exit_timeout, :max_chunk_size, :input, :enable_stderr, :ignore_epipe])
+    {stream_opts, process_opts} = Keyword.split(opts, @stream_opts)
 
     case normalize_stream_opts(stream_opts) do
       {:ok, stream_opts} ->
@@ -74,64 +82,59 @@ defmodule Exile.Stream do
     def reduce(arg, acc, fun) do
       start_fun = fn ->
         state = start_process(arg)
-        {state, :premature_exit}
+        {state, :running}
       end
 
-      next_fun = fn {state, :premature_exit} ->
-        %{
-          process: process,
-          stream_opts: %{enable_stderr: enable_stderr} = stream_opts
-        } = state
+      next_fun = fn
+        {state, :exited} ->
+          {:halt, {state, :exited}}
 
-        case Process.read_any(process, stream_opts.max_chunk_size) do
-          :eof ->
-            {:halt, {state, :normal_exit}}
+        {state, exit_state} ->
+          %{
+            process: process,
+            stream_opts: %{
+              enable_stderr: enable_stderr,
+              stream_exit_status: stream_exit_status,
+              max_chunk_size: max_chunk_size
+            }
+          } = state
 
-          {:ok, {:stdout, x}} when enable_stderr == false ->
-            {[IO.iodata_to_binary(x)], {state, :premature_exit}}
+          case Process.read_any(process, max_chunk_size) do
+            :eof when stream_exit_status == false ->
+              {:halt, {state, :eof}}
 
-          {:ok, {io_stream, x}} when enable_stderr == true ->
-            {[{io_stream, IO.iodata_to_binary(x)}], {state, :premature_exit}}
+            :eof when stream_exit_status == true ->
+              elem = [await_exit(state, :eof)]
+              {elem, {state, :exited}}
 
-          {:error, errno} ->
-            raise Error, "failed to read from the external process. errno: #{inspect(errno)}"
-        end
+            {:ok, {:stdout, x}} when enable_stderr == false ->
+              elem = [IO.iodata_to_binary(x)]
+              {elem, {state, exit_state}}
+
+            {:ok, {io_stream, x}} when enable_stderr == true ->
+              elem = [{io_stream, IO.iodata_to_binary(x)}]
+              {elem, {state, exit_state}}
+
+            {:error, errno} ->
+              raise Error, "failed to read from the external process. errno: #{inspect(errno)}"
+          end
       end
 
-      after_fun = fn {state, exit_type} ->
-        %{
-          process: process,
-          stream_opts:
-            %{
-              ignore_epipe: ignore_epipe
-            } = stream_opts,
-          writer_task: writer_task
-        } = state
+      after_fun = fn
+        {_state, :exited} ->
+          :ok
 
-        result = Process.await_exit(process, stream_opts.exit_timeout)
-        writer_task_status = Task.await(writer_task)
+        {state, exit_state} ->
+          case await_exit(state, exit_state) do
+            {:exit_status, 0} ->
+              :ok
 
-        case {exit_type, result, writer_task_status} do
-          # if reader exit early and there is a pending write
-          {:premature_exit, {:ok, _status}, {:error, :epipe}} when ignore_epipe ->
-            :ok
+            {:exit_status, exit_status} ->
+              raise Error, "command exited with status: #{inspect(exit_status)}"
 
-          # if reader exit early and there is no pending write or if
-          # there is no writer
-          {:premature_exit, {:ok, _status}, :ok} when ignore_epipe ->
-            :ok
-
-          # if we get epipe from writer then raise that error, and ignore exit status
-          {:premature_exit, {:ok, _status}, {:error, :epipe}} when ignore_epipe == false ->
-            raise Error, "abnormal command exit, received EPIPE while writing to stdin"
-
-          # Normal exit success case
-          {_, {:ok, 0}, _} ->
-            :ok
-
-          {:normal_exit, {:ok, error}, _} ->
-            raise Error, "command exited with status: #{inspect(error)}"
-        end
+            {:error, :epipe} ->
+              raise Error, "abnormal command exit, received EPIPE while writing to stdin"
+          end
       end
 
       Stream.resource(start_fun, next_fun, after_fun).(acc, fun)
@@ -193,6 +196,39 @@ defmodule Exile.Stream do
                 {:error, :epipe}
             end
           end)
+      end
+    end
+
+    defp await_exit(state, exit_state) do
+      %{
+        process: process,
+        stream_opts: %{ignore_epipe: ignore_epipe, exit_timeout: exit_timeout},
+        writer_task: writer_task
+      } = state
+
+      result = Process.await_exit(process, exit_timeout)
+      writer_task_status = Task.await(writer_task)
+
+      case {exit_state, result, writer_task_status} do
+        # if reader exit early and there is a pending write
+        {:running, {:ok, _status}, {:error, :epipe}} when ignore_epipe ->
+          {:exit_status, 0}
+
+        # if reader exit early and there is no pending write or if
+        # there is no writer
+        {:running, {:ok, _status}, :ok} when ignore_epipe ->
+          {:exit_status, 0}
+
+        # if we get epipe from writer then raise that error, and ignore exit status
+        {:running, {:ok, _status}, {:error, :epipe}} when ignore_epipe == false ->
+          {:error, :epipe}
+
+        # Normal exit success case
+        {_, {:ok, 0}, _} ->
+          {:exit_status, 0}
+
+        {:eof, {:ok, exit_status}, _} ->
+          {:exit_status, exit_status}
       end
     end
   end
@@ -267,19 +303,34 @@ defmodule Exile.Stream do
     end
   end
 
+  defp normalize_stream_exit_status(stream_exit_status) do
+    case stream_exit_status do
+      nil ->
+        {:ok, false}
+
+      stream_exit_status when is_boolean(stream_exit_status) ->
+        {:ok, stream_exit_status}
+
+      _ ->
+        {:error, ":stream_exit_status must be a boolean"}
+    end
+  end
+
   defp normalize_stream_opts(opts) do
     with {:ok, input} <- normalize_input(opts[:input]),
          {:ok, exit_timeout} <- normalize_exit_timeout(opts[:exit_timeout]),
          {:ok, max_chunk_size} <- normalize_max_chunk_size(opts[:max_chunk_size]),
          {:ok, enable_stderr} <- normalize_enable_stderr(opts[:enable_stderr]),
-         {:ok, ignore_epipe} <- normalize_ignore_epipe(opts[:ignore_epipe]) do
+         {:ok, ignore_epipe} <- normalize_ignore_epipe(opts[:ignore_epipe]),
+         {:ok, stream_exit_status} <- normalize_stream_exit_status(opts[:stream_exit_status]) do
       {:ok,
        %{
          input: input,
          exit_timeout: exit_timeout,
          max_chunk_size: max_chunk_size,
          enable_stderr: enable_stderr,
-         ignore_epipe: ignore_epipe
+         ignore_epipe: ignore_epipe,
+         stream_exit_status: stream_exit_status
        }}
     end
   end

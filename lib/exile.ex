@@ -103,6 +103,17 @@ defmodule Exile do
   [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
   ```
 
+  With stream_exit_status enabled
+
+  ```
+  iex> Exile.stream!(["sh", "-c", "echo 'foo' && exit 10"], stream_exit_status: true)
+  ...> |> Enum.to_list()
+  [
+    "foo\n",
+    {:exit_status, 10} # returns exit status of the program as last element
+  ]
+  ```
+
   For more details about stream API, see `Exile.stream!/2`.
 
   For more details about inner working, please check `Exile.Process`
@@ -173,6 +184,11 @@ defmodule Exile do
   match UNIX shell default behaviour. EPIPE is the error raised when the reader finishes
   the reading and close output pipe before command completes. Defaults to `false`.
 
+    * `stream_exit_status` - When set to true, exit status of the program is passed as
+  last element of the stream. The element will be `{:exit_status, pos_integer()}` on normal
+  exit or `{:error, :epipe}` in case of epipe error. By default if program exits with
+  non-zero exit status then the `Exile.Process.Error` will be raised. Defaults to `false`.
+
   Remaining options are passed to `Exile.Process.start_link/2`
 
   ### Examples
@@ -221,7 +237,8 @@ defmodule Exile do
           exit_timeout: timeout(),
           enable_stderr: boolean(),
           ignore_epipe: boolean(),
-          max_chunk_size: pos_integer()
+          max_chunk_size: pos_integer(),
+          stream_exit_status: boolean()
         ) :: Exile.Stream.t()
   def stream!(cmd_with_args, opts \\ []) do
     Exile.Stream.__build__(cmd_with_args, opts)
