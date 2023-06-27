@@ -67,12 +67,36 @@ defmodule Exile do
   "YWJjZGVm\n"
   ```
 
-  When the command exit with an error
+  `stream!/2` raises non-zero exit as error
 
   ```
-  iex> Exile.stream!(["sh", "-c", "exit 4"])
-  ...> |> Enum.into("")
-  ** (Exile.Process.Error) command exited with status: 4
+  iex> Exile.stream!(["sh", "-c", "echo 'foo' && exit 10"])
+  ...> |> Enum.to_list()
+  ** (Exile.Stream.AbnormalExit) program exited with exit status: 10
+  ```
+
+  `stream/2` variant returns exit status as last element
+
+  ```
+  iex> Exile.stream(["sh", "-c", "echo 'foo' && exit 10"])
+  ...> |> Enum.to_list()
+  [
+    "foo\n",
+    {:exit, {:status, 10}} # returns exit status of the program as last element
+  ]
+  ```
+
+  You can fetch exit_status from the error for `stream!/2`
+
+  ```
+  iex> try do
+  ...>   Exile.stream!(["sh", "-c", "exit 10"])
+  ...>   |> Enum.to_list()
+  ...> rescue
+  ...>   e in Exile.Stream.AbnormalExit ->
+  ...>     e.exit_status
+  ...> end
+  10
   ```
 
   With `max_chunk_size` set
@@ -103,7 +127,7 @@ defmodule Exile do
   [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
   ```
 
-  For more details about stream API, see `Exile.stream!/2`.
+  For more details about stream API, see `Exile.stream!/2` and `Exile.stream/2`.
 
   For more details about inner working, please check `Exile.Process`
   documentation.
@@ -175,6 +199,9 @@ defmodule Exile do
 
   Remaining options are passed to `Exile.Process.start_link/2`
 
+  If program exits with non-zero exit status or :epipe then `Exile.Stream.AbnormalExit`
+  error will be raised with `exit_status` field set.
+
   ### Examples
 
   ```
@@ -224,6 +251,27 @@ defmodule Exile do
           max_chunk_size: pos_integer()
         ) :: Exile.Stream.t()
   def stream!(cmd_with_args, opts \\ []) do
-    Exile.Stream.__build__(cmd_with_args, opts)
+    Exile.Stream.__build__(cmd_with_args, Keyword.put(opts, :stream_exit_status, false))
+  end
+
+  @doc ~S"""
+  Same as `Exile.stream!/2` but the program exit status is passed as last
+  element of the stream.
+
+  The last element will be of the form `{:exit, term()}`. `term` will be a
+  positive integer in case of normal exit and `:epipe` in case of epipe error
+
+  See `Exile.stream!/2` documentation for details about the options and
+  examples.
+  """
+  @spec stream(nonempty_list(String.t()),
+          input: Enum.t() | collectable_func(),
+          exit_timeout: timeout(),
+          enable_stderr: boolean(),
+          ignore_epipe: boolean(),
+          max_chunk_size: pos_integer()
+        ) :: Exile.Stream.t()
+  def stream(cmd_with_args, opts \\ []) do
+    Exile.Stream.__build__(cmd_with_args, Keyword.put(opts, :stream_exit_status, true))
   end
 end
