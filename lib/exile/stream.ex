@@ -8,6 +8,21 @@ defmodule Exile.Stream do
 
   require Logger
 
+  defmodule AbnormalExit do
+    defexception [:message, :exit_status]
+
+    @impl true
+    def exception(:epipe) do
+      msg = "program exited due to :epipe error"
+      %__MODULE__{message: msg, exit_status: :epipe}
+    end
+
+    def exception(exit_status) do
+      msg = "program exited with exit status: #{exit_status}"
+      %__MODULE__{message: msg, exit_status: exit_status}
+    end
+  end
+
   defmodule Sink do
     @moduledoc false
 
@@ -130,10 +145,10 @@ defmodule Exile.Stream do
               :ok
 
             {:exit, {:status, exit_status}} ->
-              raise Error, "command exited with status: #{inspect(exit_status)}"
+              raise AbnormalExit, exit_status
 
             {:exit, :epipe} ->
-              raise Error, "abnormal command exit, received EPIPE while writing to stdin"
+              raise AbnormalExit, :epipe
           end
       end
 

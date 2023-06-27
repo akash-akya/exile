@@ -67,12 +67,36 @@ defmodule Exile do
   "YWJjZGVm\n"
   ```
 
-  When the command exit with an error
+  `stream!/2` raises non-zero exit as error
 
   ```
-  iex> Exile.stream!(["sh", "-c", "exit 4"])
-  ...> |> Enum.into("")
-  ** (Exile.Process.Error) command exited with status: 4
+  iex> Exile.stream!(["sh", "-c", "echo 'foo' && exit 10"])
+  ...> |> Enum.to_list()
+  ** (Exile.Stream.AbnormalExit) program exited with exit status: 10
+  ```
+
+  `stream/2` variant returns exit status as last element
+
+  ```
+  iex> Exile.stream(["sh", "-c", "echo 'foo' && exit 10"])
+  ...> |> Enum.to_list()
+  [
+    "foo\n",
+    {:exit, {:status, 10}} # returns exit status of the program as last element
+  ]
+  ```
+
+  You can fetch exit_status from the error for `stream!/2`
+
+  ```
+  iex> try do
+  ...>   Exile.stream!(["sh", "-c", "exit 10"])
+  ...>   |> Enum.to_list()
+  ...> rescue
+  ...>   e in Exile.Stream.AbnormalExit ->
+  ...>     e.exit_status
+  ...> end
+  10
   ```
 
   With `max_chunk_size` set
@@ -101,25 +125,6 @@ defmodule Exile do
   iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], enable_stderr: true)
   ...> |> Enum.to_list()
   [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
-  ```
-
-  `stream!/2` variant raises non-zero exit as error
-
-  ```
-  iex> Exile.stream!(["sh", "-c", "echo 'foo' && exit 10"])
-  ...> |> Enum.to_list()
-  ** (Exile.Process.Error) command exited with status: 10
-  ```
-
-  `stream/2` variant returns exit status as last element
-
-  ```
-  iex> Exile.stream(["sh", "-c", "echo 'foo' && exit 10"])
-  ...> |> Enum.to_list()
-  [
-    "foo\n",
-    {:exit, {:status, 10}} # returns exit status of the program as last element
-  ]
   ```
 
   For more details about stream API, see `Exile.stream!/2` and `Exile.stream/2`.
@@ -194,8 +199,8 @@ defmodule Exile do
 
   Remaining options are passed to `Exile.Process.start_link/2`
 
-  If program exits with non-zero exit status then the `Exile.Process.Error` will be
-  raised.
+  If program exits with non-zero exit status or :epipe then `Exile.Stream.AbnormalExit`
+  error will be raised with `exit_status` field set.
 
   ### Examples
 

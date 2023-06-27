@@ -64,8 +64,8 @@ defmodule ExileTest do
   test "premature stream termination" do
     input_stream = Stream.map(1..100_000, fn _ -> "hello" end)
 
-    assert_raise Exile.Process.Error,
-                 "abnormal command exit, received EPIPE while writing to stdin",
+    assert_raise Exile.Stream.AbnormalExit,
+                 "program exited due to :epipe error",
                  fn ->
                    Exile.stream!(~w(cat), input: input_stream)
                    |> Enum.take(1)
@@ -83,7 +83,7 @@ defmodule ExileTest do
   test "stream!/2 with exit status" do
     proc_stream = Exile.stream!(["sh", "-c", "exit 10"])
 
-    assert_raise Exile.Process.Error, "command exited with status: 10", fn ->
+    assert_raise Exile.Stream.AbnormalExit, "program exited with exit status: 10", fn ->
       Enum.to_list(proc_stream)
     end
   end
@@ -92,6 +92,23 @@ defmodule ExileTest do
     proc_stream = Exile.stream(["sh", "-c", "exit 10"])
     stdout = Enum.to_list(proc_stream)
     assert stdout == [{:exit, {:status, 10}}]
+  end
+
+  test "stream!/2 abnormal exit status" do
+    proc_stream = Exile.stream!(["sh", "-c", "exit 5"])
+
+    exit_status =
+      try do
+        proc_stream
+        |> Enum.to_list()
+
+        nil
+      rescue
+        e in Exile.Stream.AbnormalExit ->
+          e.exit_status
+      end
+
+    assert exit_status == 5
   end
 
   defp split_stream(stream) do
