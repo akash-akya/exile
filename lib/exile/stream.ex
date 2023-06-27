@@ -126,13 +126,13 @@ defmodule Exile.Stream do
 
         {state, exit_state} ->
           case await_exit(state, exit_state) do
-            {:exit_status, 0} ->
+            {:exit, {:status, 0}} ->
               :ok
 
-            {:exit_status, exit_status} ->
+            {:exit, {:status, exit_status}} ->
               raise Error, "command exited with status: #{inspect(exit_status)}"
 
-            {:error, :epipe} ->
+            {:exit, :epipe} ->
               raise Error, "abnormal command exit, received EPIPE while writing to stdin"
           end
       end
@@ -212,23 +212,23 @@ defmodule Exile.Stream do
       case {exit_state, result, writer_task_status} do
         # if reader exit early and there is a pending write
         {:running, {:ok, _status}, {:error, :epipe}} when ignore_epipe ->
-          {:exit_status, 0}
+          {:exit, {:status, 0}}
 
         # if reader exit early and there is no pending write or if
         # there is no writer
         {:running, {:ok, _status}, :ok} when ignore_epipe ->
-          {:exit_status, 0}
+          {:exit, {:status, 0}}
 
         # if we get epipe from writer then raise that error, and ignore exit status
         {:running, {:ok, _status}, {:error, :epipe}} when ignore_epipe == false ->
-          {:error, :epipe}
+          {:exit, :epipe}
 
         # Normal exit success case
         {_, {:ok, 0}, _} ->
-          {:exit_status, 0}
+          {:exit, {:status, 0}}
 
         {:eof, {:ok, exit_status}, _} ->
-          {:exit_status, exit_status}
+          {:exit, {:status, exit_status}}
       end
     end
   end
