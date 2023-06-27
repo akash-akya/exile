@@ -80,10 +80,18 @@ defmodule ExileTest do
              |> Enum.take(1)
   end
 
-  test "stream with stream_exit_status option" do
-    proc_stream = Exile.stream!(["sh", "-c", "exit 10"], stream_exit_status: true)
+  test "stream!/2 with exit status" do
+    proc_stream = Exile.stream!(["sh", "-c", "exit 10"])
+
+    assert_raise Exile.Process.Error, "command exited with status: 10", fn ->
+      Enum.to_list(proc_stream)
+    end
+  end
+
+  test "stream/2 with exit status" do
+    proc_stream = Exile.stream(["sh", "-c", "exit 10"])
     stdout = Enum.to_list(proc_stream)
-    assert stdout == [{:exit_status, 10}]
+    assert stdout == [{:exit, {:status, 10}}]
   end
 
   defp split_stream(stream) do
