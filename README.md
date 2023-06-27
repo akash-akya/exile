@@ -6,7 +6,12 @@
 
 Exile is an alternative to [ports](https://hexdocs.pm/elixir/Port.html) for running external programs. It provides back-pressure, non-blocking io, and tries to fix ports issues.
 
-Exile is built around the idea of having demand-driven, asynchronous interaction with external process. Think of streaming a video through `ffmpeg` to serve a web request. Exile internally uses NIF. See [Rationale](#rationale) for details. It also provides stream abstraction for interacting with an external program. For example, getting audio out of a stream is as simple as
+Exile is built around the idea of having demand-driven, asynchronous
+interaction with external process. Think of streaming a video through
+`ffmpeg` to serve a web request. Exile internally uses NIF. See
+[Rationale](#rationale) for details. It also provides stream
+abstraction for interacting with an external program. For example,
+getting audio out of a stream is as simple as
 
 ``` elixir
 Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_video.mkv", [], 65_535))
@@ -14,13 +19,18 @@ Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_vid
 |> Stream.run()
 ```
 
-See `Exile.stream!/2` module doc for more details about handling stderr and other options.
+See `Exile.stream!/2` module doc for more details about handling
+stderr and other options.
 
-`Exile.stream!/2` is a convenience wrapper around `Exile.Process`. Prefer using `Exile.stream!` over using `Exile.Process` directly.
+`Exile.stream!/2` is a convenience wrapper around
+`Exile.Process`. Prefer using `Exile.stream!` over using
+`Exile.Process` directly.
 
 Exile requires OTP v22.1 and above.
 
-Exile is based on NIF, please know consequence of that before using Exile. For basic use cases use [ExCmd](https://github.com/akash-akya/ex_cmd) instead.
+Exile is based on NIF, please know consequence of that before using
+Exile. For basic use cases use
+[ExCmd](https://github.com/akash-akya/ex_cmd) instead.
 
 
 ## Installation
@@ -98,12 +108,37 @@ end
   "YWJjZGVm\n"
   ```
 
-  When the command exit with an error
 
-  ```elixir
-  iex> Exile.stream!(["sh", "-c", "exit 4"])
-  ...> |> Enum.into("")
-  ** (Exile.Process.Error) command exited with status: 4
+  `stream!/2` raises non-zero exit as error
+
+  ```
+  iex> Exile.stream!(["sh", "-c", "echo 'foo' && exit 10"])
+  ...> |> Enum.to_list()
+  ** (Exile.Stream.AbnormalExit) program exited with exit status: 10
+  ```
+
+  `stream/2` variant returns exit status as last element
+
+  ```
+  iex> Exile.stream(["sh", "-c", "echo 'foo' && exit 10"])
+  ...> |> Enum.to_list()
+  [
+    "foo\n",
+    {:exit, {:status, 10}} # returns exit status of the program as last element
+  ]
+  ```
+
+  You can fetch exit_status from the error for `stream!/2`
+
+  ```
+  iex> try do
+  ...>   Exile.stream!(["sh", "-c", "exit 10"])
+  ...>   |> Enum.to_list()
+  ...> rescue
+  ...>   e in Exile.Stream.AbnormalExit ->
+  ...>     e.exit_status
+  ...> end
+  10
   ```
 
   With `max_chunk_size` set
@@ -134,10 +169,9 @@ end
   [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
   ```
 
-  For more details about stream API, see `Exile.stream!/2`.
+  For more details about stream API, see `Exile.stream!/2` and `Exile.stream/2`.
 
-  For more details about inner working, please check `Exile.Process`
-  documentation.
+  For more details about inner working, please check `Exile.Process` documentation.
 
 
 ## Rationale
