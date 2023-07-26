@@ -69,7 +69,7 @@ defmodule Exile.Stream do
     :exit_timeout,
     :max_chunk_size,
     :input,
-    :enable_stderr,
+    :stderr,
     :ignore_epipe,
     :stream_exit_status
   ]
@@ -108,7 +108,7 @@ defmodule Exile.Stream do
           %{
             process: process,
             stream_opts: %{
-              enable_stderr: enable_stderr,
+              stderr: stderr,
               stream_exit_status: stream_exit_status,
               max_chunk_size: max_chunk_size
             }
@@ -122,11 +122,11 @@ defmodule Exile.Stream do
               elem = [await_exit(state, :eof)]
               {elem, {state, :exited}}
 
-            {:ok, {:stdout, x}} when enable_stderr == false ->
+            {:ok, {:stdout, x}} when stderr != :consume ->
               elem = [IO.iodata_to_binary(x)]
               {elem, {state, exit_state}}
 
-            {:ok, {io_stream, x}} when enable_stderr == true ->
+            {:ok, {io_stream, x}} when stderr == :consume ->
               elem = [{io_stream, IO.iodata_to_binary(x)}]
               {elem, {state, exit_state}}
 
@@ -172,7 +172,7 @@ defmodule Exile.Stream do
            stream_opts: stream_opts,
            cmd_with_args: cmd_with_args
          }) do
-      process_opts = Keyword.put(process_opts, :enable_stderr, stream_opts[:enable_stderr])
+      process_opts = Keyword.put(process_opts, :stderr, stream_opts[:stderr])
       {:ok, process} = Process.start_link(cmd_with_args, process_opts)
       sink = %Sink{process: process, ignore_epipe: stream_opts[:ignore_epipe]}
       writer_task = start_input_streamer(sink, stream_opts.input)
@@ -292,16 +292,16 @@ defmodule Exile.Stream do
     end
   end
 
-  defp normalize_enable_stderr(enable_stderr) do
-    case enable_stderr do
+  defp normalize_stderr(stderr) do
+    case stderr do
       nil ->
-        {:ok, false}
+        {:ok, :console}
 
-      enable_stderr when is_boolean(enable_stderr) ->
-        {:ok, enable_stderr}
+      stderr when stderr in [:console, :disable, :consume] ->
+        {:ok, stderr}
 
       _ ->
-        {:error, ":enable_stderr must be a boolean"}
+        {:error, ":stderr must be an atom and one of :console, :disable, :consume"}
     end
   end
 
@@ -335,7 +335,7 @@ defmodule Exile.Stream do
     with {:ok, input} <- normalize_input(opts[:input]),
          {:ok, exit_timeout} <- normalize_exit_timeout(opts[:exit_timeout]),
          {:ok, max_chunk_size} <- normalize_max_chunk_size(opts[:max_chunk_size]),
-         {:ok, enable_stderr} <- normalize_enable_stderr(opts[:enable_stderr]),
+         {:ok, stderr} <- normalize_stderr(opts[:stderr]),
          {:ok, ignore_epipe} <- normalize_ignore_epipe(opts[:ignore_epipe]),
          {:ok, stream_exit_status} <- normalize_stream_exit_status(opts[:stream_exit_status]) do
       {:ok,
@@ -343,7 +343,7 @@ defmodule Exile.Stream do
          input: input,
          exit_timeout: exit_timeout,
          max_chunk_size: max_chunk_size,
-         enable_stderr: enable_stderr,
+         stderr: stderr,
          ignore_epipe: ignore_epipe,
          stream_exit_status: stream_exit_status
        }}

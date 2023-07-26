@@ -105,9 +105,9 @@ defmodule Exile.Process do
   ### Pipe Operations
 
   Pipe owner can read or write date to the owned pipe. `:stderr` by
-  default is disabled, data written to stderr will appear on the
-  console. You can enable reading stderr by passing `enable_stderr:
-  true` during process creation.
+  default is connected to console, data written to stderr will appear on
+  the console. You can enable reading stderr by passing `stderr: :consume`
+  during process creation.
 
   Special function `Exile.Process.read_any/2` can be used to read
   from either stdout or stderr whichever has the data available.
@@ -127,7 +127,7 @@ defmodule Exile.Process do
   ```
   # write "Hello" to stdout and "World" to stderr
   iex> script = Enum.join(["echo Hello", "echo World >&2"], "\n")
-  iex> {:ok, p} = Process.start_link(["sh", "-c", script], enable_stderr: true)
+  iex> {:ok, p} = Process.start_link(["sh", "-c", script], stderr: :consume)
   iex> Process.read(p, 100)
   {:ok, "Hello\n"}
   iex> Process.read_stderr(p, 100)
@@ -141,7 +141,7 @@ defmodule Exile.Process do
   ```
   # write "Hello" to stdout and "World" to stderr
   iex> script = Enum.join(["echo Hello", "echo World >&2"], "\n")
-  iex> {:ok, p} = Process.start_link(["sh", "-c", script], enable_stderr: true)
+  iex> {:ok, p} = Process.start_link(["sh", "-c", script], stderr: :consume)
   iex> Process.read_any(p)
   {:ok, {:stdout, "Hello\n"}}
   iex> Process.read_any(p)
@@ -281,7 +281,7 @@ defmodule Exile.Process do
 
   @type exit_status :: non_neg_integer
 
-  @default_opts [env: [], enable_stderr: false]
+  @default_opts [env: [], stderr: :console]
   @default_buffer_size 65_535
   @os_signal_timeout 1000
 
@@ -300,9 +300,12 @@ defmodule Exile.Process do
     * `env`  -  a list of tuples containing environment key-value.
   These can be accessed in the external program
 
-    * `enable_stderr`  -  when set to true, Exile connects stderr
-  pipe for the consumption. Defaults to false. Note that when set
-  to true stderr must be consumed to avoid external program from blocking.
+    * `stderr`  -  different ways to handle stderr stream.
+  possible values `:console`, `:disable`, `:stream`.
+        1. `:console`  -  stderr output is redirected to console (Default)
+        2. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
+        3. `:consume`  -  connects stderr for the consumption. When set to stream the output must be consumed to
+  avoid external program from blocking.
 
   Caller of the process will be the owner owner of the Exile Process.
   And default owner of all opened pipes.
@@ -312,7 +315,7 @@ defmodule Exile.Process do
   @spec start_link(nonempty_list(String.t()),
           cd: String.t(),
           env: [{String.t(), String.t()}],
-          enable_stderr: boolean()
+          stderr: :console | :disable | :stream
         ) :: {:ok, t} | {:error, any()}
   def start_link(cmd_with_args, opts \\ []) do
     opts = Keyword.merge(@default_opts, opts)
@@ -402,7 +405,7 @@ defmodule Exile.Process do
 
   @doc """
   Returns bytes from executed command's stderr with maximum size `max_size`.
-  Pipe must be enabled with `enable_stderr: true` to read the data.
+  Pipe must be enabled with `stderr: :consume` to read the data.
 
   Blocks if no bytes are written to stderr yet. And returns as soon as
   bytes are available
@@ -540,7 +543,7 @@ defmodule Exile.Process do
 
   @impl true
   def init(args) do
-    {enable_stderr, args} = Map.pop(args, :enable_stderr)
+    {stderr, args} = Map.pop(args, :stderr)
     {owner, args} = Map.pop!(args, :owner)
     {exit_ref, args} = Map.pop!(args, :exit_ref)
 
@@ -548,7 +551,7 @@ defmodule Exile.Process do
       args: args,
       owner: owner,
       status: :init,
-      enable_stderr: enable_stderr,
+      stderr: stderr,
       operations: Operations.new(),
       exit_ref: exit_ref,
       monitor_ref: Process.monitor(owner)
@@ -838,10 +841,10 @@ defmodule Exile.Process do
       stdin: stdin_fd,
       stdout: stdout_fd,
       stderr: stderr_fd
-    } = Exec.start(state.args, state.enable_stderr)
+    } = Exec.start(state.args, state.stderr)
 
     stderr =
-      if state.enable_stderr do
+      if state.stderr == :consume do
         Pipe.new(:stderr, stderr_fd, state.owner)
       else
         Pipe.new(:stderr)

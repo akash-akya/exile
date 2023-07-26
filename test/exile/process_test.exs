@@ -79,7 +79,7 @@ defmodule Exile.ProcessTest do
     end
 
     test "reading from stderr" do
-      {:ok, s} = Process.start_link(["sh", "-c", "echo foo >>/dev/stderr"], enable_stderr: true)
+      {:ok, s} = Process.start_link(["sh", "-c", "echo foo >>/dev/stderr"], stderr: :consume)
       assert {:ok, "foo\n"} = Process.read_stderr(s, 100)
     end
 
@@ -89,7 +89,7 @@ defmodule Exile.ProcessTest do
       echo "bar" >&2
       """
 
-      {:ok, s} = Process.start_link(["sh", "-c", script], enable_stderr: true)
+      {:ok, s} = Process.start_link(["sh", "-c", script], stderr: :consume)
 
       {:ok, ret1} = Process.read_any(s, 100)
       {:ok, ret2} = Process.read_any(s, 100)
@@ -101,7 +101,8 @@ defmodule Exile.ProcessTest do
     end
 
     test "reading from stderr_read when stderr disabled" do
-      {:ok, s} = Process.start_link(["sh", "-c", "echo foo >>/dev/stderr"], enable_stderr: false)
+      {:ok, s} = Process.start_link(["sh", "-c", "echo foo >>/dev/stderr"], stderr: :console)
+
       assert {:error, :pipe_closed_or_invalid_caller} = Process.read_stderr(s, 100)
     end
 
@@ -111,7 +112,7 @@ defmodule Exile.ProcessTest do
       echo "bar" >&2
       """
 
-      {:ok, s} = Process.start_link(["sh", "-c", script], enable_stderr: false)
+      {:ok, s} = Process.start_link(["sh", "-c", script], stderr: :console)
       {:ok, ret} = Process.read_any(s, 100)
 
       # we can still read from stdout even if stderr is disabled

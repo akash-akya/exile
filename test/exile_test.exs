@@ -5,7 +5,7 @@ defmodule ExileTest do
 
   test "stream with enumerable" do
     proc_stream =
-      Exile.stream!(["cat"], input: Stream.map(1..1000, fn _ -> "a" end), enable_stderr: false)
+      Exile.stream!(["cat"], input: Stream.map(1..1000, fn _ -> "a" end), stderr: :console)
 
     stdout = proc_stream |> Enum.to_list()
     assert IO.iodata_length(stdout) == 1000
@@ -26,7 +26,7 @@ defmodule ExileTest do
   end
 
   test "stderr" do
-    proc_stream = Exile.stream!(["sh", "-c", "echo foo >>/dev/stderr"], enable_stderr: true)
+    proc_stream = Exile.stream!(["sh", "-c", "echo foo >>/dev/stderr"], stderr: :consume)
 
     assert {[], stderr} = split_stream(proc_stream)
     assert IO.iodata_to_binary(stderr) == "foo\n"
@@ -40,7 +40,7 @@ defmodule ExileTest do
     done
     """
 
-    proc_stream = Exile.stream!(["sh", "-c", script], enable_stderr: true)
+    proc_stream = Exile.stream!(["sh", "-c", script], stderr: :consume)
 
     {stdout, stderr} = split_stream(proc_stream)
 
