@@ -16,6 +16,7 @@ ifeq ($(UNAME), Linux)
 endif
 
 all: priv/exile.so priv/spawner
+	@echo > /dev/null
 
 priv/exile.so: c_src/exile.c
 	mkdir -p priv

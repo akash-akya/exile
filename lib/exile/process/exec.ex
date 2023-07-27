@@ -22,7 +22,7 @@ defmodule Exile.Process.Exec do
           cd: cd,
           env: env
         },
-        enable_stderr
+        stderr
       ) do
     socket_path = socket_path()
     {:ok, sock} = :socket.open(:local, :stream, :default)
@@ -31,7 +31,7 @@ defmodule Exile.Process.Exec do
       :ok = socket_bind(sock, socket_path)
       :ok = :socket.listen(sock)
 
-      spawner_cmdline_args = [socket_path, to_string(enable_stderr) | cmd_with_args]
+      spawner_cmdline_args = [socket_path, to_string(stderr) | cmd_with_args]
 
       port_opts =
         [:nouse_stdio, :exit_status, :binary, args: spawner_cmdline_args] ++
@@ -42,7 +42,7 @@ defmodule Exile.Process.Exec do
       {:os_pid, os_pid} = Port.info(port, :os_pid)
       Exile.Watcher.watch(self(), os_pid, socket_path)
 
-      {stdin_fd, stdout_fd, stderr_fd} = receive_fds(sock, enable_stderr)
+      {stdin_fd, stdout_fd, stderr_fd} = receive_fds(sock, stderr)
 
       %{port: port, stdin: stdin_fd, stdout: stdout_fd, stderr: stderr_fd}
     after
@@ -52,16 +52,22 @@ defmodule Exile.Process.Exec do
   end
 
   @spec normalize_exec_args(nonempty_list(), keyword()) ::
-          {:ok, %{cmd_with_args: nonempty_list(), cd: charlist, env: env, enable_stderr: boolean}}
+          {:ok,
+           %{
+             cmd_with_args: nonempty_list(),
+             cd: charlist,
+             env: env,
+             stderr: :console | :disable | :consume
+           }}
           | {:error, String.t()}
   def normalize_exec_args(cmd_with_args, opts) do
     with {:ok, cmd} <- normalize_cmd(cmd_with_args),
          {:ok, args} <- normalize_cmd_args(cmd_with_args),
          :ok <- validate_opts_fields(opts),
          {:ok, cd} <- normalize_cd(opts[:cd]),
-         {:ok, enable_stderr} <- normalize_enable_stderr(opts[:enable_stderr]),
+         {:ok, stderr} <- normalize_stderr(opts[:stderr]),
          {:ok, env} <- normalize_env(opts[:env]) do
-      {:ok, %{cmd_with_args: [cmd | args], cd: cd, env: env, enable_stderr: enable_stderr}}
+      {:ok, %{cmd_with_args: [cmd | args], cd: cd, env: env, stderr: stderr}}
     end
   end
 
@@ -73,7 +79,7 @@ defmodule Exile.Process.Exec do
   @socket_timeout 2000
 
   @spec receive_fds(:socket.socket(), boolean) :: {Pipe.fd(), Pipe.fd(), Pipe.fd()}
-  defp receive_fds(lsock, enable_stderr) do
+  defp receive_fds(lsock, stderr) do
     {:ok, sock} = :socket.accept(lsock, @socket_timeout)
 
     try do
@@ -87,7 +93,7 @@ defmodule Exile.Process.Exec do
       {:ok, stdin} = Nif.nif_create_fd(stdin_fd)
 
       {:ok, stderr} =
-        if enable_stderr do
+        if stderr == :consume do
           Nif.nif_create_fd(stderr_fd)
         else
           {:ok, nil}
@@ -187,23 +193,24 @@ defmodule Exile.Process.Exec do
     end
   end
 
-  @spec normalize_enable_stderr(enable_stderr :: boolean) :: {:ok, boolean} | {:error, String.t()}
-  defp normalize_enable_stderr(enable_stderr) do
-    case enable_stderr do
+  @spec normalize_stderr(stderr :: :console | :disable | :consume | nil) ::
+          {:ok, :console | :disable | :consume} | {:error, String.t()}
+  defp normalize_stderr(stderr) do
+    case stderr do
       nil ->
-        {:ok, false}
+        {:ok, :console}
 
-      enable_stderr when is_boolean(enable_stderr) ->
-        {:ok, enable_stderr}
+      stderr when stderr in [:console, :disable, :consume] ->
+        {:ok, stderr}
 
       _ ->
-        {:error, ":enable_stderr must be a boolean"}
+        {:error, ":stderr must be an atom and one of :console, :disable, :consume"}
     end
   end
 
   @spec validate_opts_fields(keyword) :: :ok | {:error, String.t()}
   defp validate_opts_fields(opts) do
-    {_, additional_opts} = Keyword.split(opts, [:cd, :env, :enable_stderr])
+    {_, additional_opts} = Keyword.split(opts, [:cd, :env, :stderr])
 
     if Enum.empty?(additional_opts) do
       :ok

@@ -119,12 +119,20 @@ defmodule Exile do
   "X 250 X\n"
   ```
 
-  With stderr enabled
+  With stderr set to :consume
 
   ```
-  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], enable_stderr: true)
+  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], stderr: :consume)
   ...> |> Enum.to_list()
   [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
+  ```
+
+  With stderr set to :disable
+
+  ```
+  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], stderr: :disable)
+  ...> |> Enum.to_list()
+  ["foo\n"]
   ```
 
   For more details about stream API, see `Exile.stream!/2` and `Exile.stream/2`.
@@ -187,9 +195,12 @@ defmodule Exile do
   Chunk size can be less than the `max_chunk_size` depending on the amount of
   data available to be read. Defaults to `65_535`
 
-    * `enable_stderr` - When set to true, output stream will contain stderr data along
-  with stdout. Stream data will be of the form `{:stdout, iodata}` or `{:stderr, iodata}`
-  to differentiate different streams. Defaults to false. See example below
+    * `stderr`  -  different ways to handle stderr stream. possible values `:console`, `:disable`, `:stream`.
+        1. `:console`  -  stderr output is redirected to console (Default)
+        2. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
+        3. `:consume`  -  connects stderr for the consumption. The output stream will contain stderr
+  data along with stdout. Stream data will be either `{:stdout, iodata}` or `{:stderr, iodata}`
+  to differentiate different streams. See example below.
 
     * `ignore_epipe` - When set to true, reader can exit early without raising error.
   Typically writer gets `EPIPE` error on write when program terminate prematurely.
@@ -215,7 +226,7 @@ defmodule Exile do
   ```
   Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1),
     input: File.stream!("music_video.mkv", [], 65_535),
-    enable_stderr: true
+    stderr: :consume
   )
   |> Stream.transform(
     fn ->
@@ -246,7 +257,7 @@ defmodule Exile do
   @spec stream!(nonempty_list(String.t()),
           input: Enum.t() | collectable_func(),
           exit_timeout: timeout(),
-          enable_stderr: boolean(),
+          stderr: :console | :disable | :consume,
           ignore_epipe: boolean(),
           max_chunk_size: pos_integer()
         ) :: Exile.Stream.t()
@@ -267,7 +278,7 @@ defmodule Exile do
   @spec stream(nonempty_list(String.t()),
           input: Enum.t() | collectable_func(),
           exit_timeout: timeout(),
-          enable_stderr: boolean(),
+          stderr: :console | :disable | :consume,
           ignore_epipe: boolean(),
           max_chunk_size: pos_integer()
         ) :: Exile.Stream.t()

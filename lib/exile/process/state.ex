@@ -27,7 +27,7 @@ defmodule Exile.Process.State do
           port: port(),
           pipes: pipes,
           status: status,
-          enable_stderr: boolean(),
+          stderr: :console | :disable | :consume,
           operations: Operations.t(),
           exit_ref: reference(),
           monitor_ref: reference()
@@ -39,7 +39,7 @@ defmodule Exile.Process.State do
     :port,
     :pipes,
     :status,
-    :enable_stderr,
+    :stderr,
     :operations,
     :exit_ref,
     :monitor_ref

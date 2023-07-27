@@ -161,12 +161,20 @@ end
   "X 250 X\n"
   ```
 
-  With stderr enabled
+  With stderr set to `:consume`
 
   ```elixir
-  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], enable_stderr: true)
+  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], stderr: :consume)
   ...> |> Enum.to_list()
   [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
+  ```
+
+  With stderr set to `:disable`
+
+  ```elixir
+  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], stderr: :disable)
+  ...> |> Enum.to_list()
+  ["foo\n"]
   ```
 
   For more details about stream API, see `Exile.stream!/2` and `Exile.stream/2`.

@@ -1,11 +1,13 @@
 defmodule ExileTest do
   use ExUnit.Case
 
+  @write_stderr Path.join(__DIR__, "scripts/write_stderr.sh")
+
   doctest Exile
 
   test "stream with enumerable" do
     proc_stream =
-      Exile.stream!(["cat"], input: Stream.map(1..1000, fn _ -> "a" end), enable_stderr: false)
+      Exile.stream!(["cat"], input: Stream.map(1..1000, fn _ -> "a" end), stderr: :console)
 
     stdout = proc_stream |> Enum.to_list()
     assert IO.iodata_length(stdout) == 1000
@@ -25,11 +27,23 @@ defmodule ExileTest do
     assert IO.iodata_to_binary(stdout) == "hello\n"
   end
 
-  test "stderr" do
-    proc_stream = Exile.stream!(["sh", "-c", "echo foo >>/dev/stderr"], enable_stderr: true)
+  test "stderr to console" do
+    {output, exit_status} = run_in_shell([@write_stderr, "Hello World"], stderr: :console)
+    assert output == "Hello World\n"
+    assert exit_status == 0
+  end
+
+  test "stderr disabled" do
+    {output, exit_status} = run_in_shell([@write_stderr, "Hello World"], stderr: :disable)
+    assert output == ""
+    assert exit_status == 0
+  end
+
+  test "stderr consume" do
+    proc_stream = Exile.stream!([fixture("write_stderr.sh"), "Hello World"], stderr: :consume)
 
     assert {[], stderr} = split_stream(proc_stream)
-    assert IO.iodata_to_binary(stderr) == "foo\n"
+    assert IO.iodata_to_binary(stderr) == "Hello World\n"
   end
 
   test "multiple streams" do
@@ -40,7 +54,7 @@ defmodule ExileTest do
     done
     """
 
-    proc_stream = Exile.stream!(["sh", "-c", script], enable_stderr: true)
+    proc_stream = Exile.stream!(["sh", "-c", script], stderr: :consume)
 
     {stdout, stderr} = split_stream(proc_stream)
 
@@ -119,5 +133,22 @@ defmodule ExileTest do
       end)
 
     {Enum.reverse(stdout), Enum.reverse(stderr)}
+  end
+
+  defp fixture(script) do
+    Path.join([__DIR__, "scripts", script])
+  end
+
+  # runs the given code in a separate mix shell and captures all the
+  # output written to the shell during the execution the output can be
+  # from the elixir or from the spawned command
+  defp run_in_shell(args, opts) do
+    expr = ~s{Exile.stream!(#{inspect(args)}, #{inspect(opts)}) |> Enum.to_list()}
+
+    {_output, _exit_status} =
+      System.cmd("sh", ["-c", "mix run -e '#{expr}'"],
+        stderr_to_stdout: true,
+        env: [{"MIX_ENV", "test"}]
+      )
   end
 end

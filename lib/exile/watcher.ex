@@ -33,7 +33,7 @@ defmodule Exile.Watcher do
     _ = File.rm(socket_path)
     # at max we wait for 50ms for program to exit
     if process_exit?(os_pid, 50) do
-      Logger.debug("External program exited automatically")
+      :ok
     else
       attempt_graceful_exit(os_pid)
     end
