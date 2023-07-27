@@ -18,6 +18,8 @@ jobs:
             otp: 23.x
           - elixir: 1.14.x
             otp: 24.x
+          - elixir: 1.15.x
+            otp: 25.x
 
     steps:
       - uses: erlef/setup-beam@v1
