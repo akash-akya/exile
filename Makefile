@@ -6,7 +6,6 @@ UNAME := $(shell uname)
 CFLAGS ?= -Wall -Werror -Wno-unused-parameter -pedantic -std=c99 -O2
 
 ifeq ($(UNAME), Darwin)
-	CFLAGS += -fsanitize=undefined
 	TARGET_CFLAGS ?= -fPIC -undefined dynamic_lookup -dynamiclib -Wextra
 endif
 
