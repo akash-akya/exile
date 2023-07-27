@@ -146,6 +146,9 @@ defmodule ExileTest do
     expr = ~s{Exile.stream!(#{inspect(args)}, #{inspect(opts)}) |> Enum.to_list()}
 
     {_output, _exit_status} =
-      System.cmd("sh", ["-c", "mix run -e '#{expr}'"], stderr_to_stdout: true)
+      System.cmd("sh", ["-c", "mix run -e '#{expr}'"],
+        stderr_to_stdout: true,
+        env: [{"MIX_ENV", "test"}]
+      )
   end
 end
