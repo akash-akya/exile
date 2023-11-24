@@ -1,0 +1,219 @@
+# Video Streaming Server Using FFmpeg
+
+```elixir
+Mix.install([
+  {:req, "~> 0.4.5"},
+  {:ex_cmd, "~> 0.10.0"},
+  {:plug, "~> 1.15"},
+  {:kino, "~> 0.11.3"},
+  {:bandit, "~> 1.1"}
+])
+```
+
+## Introduction
+
+Elixir and Erlang provide [`Port`](https://hexdocs.pm/elixir/Port.html) a Port for running external programs. However, communicating with these programs over stdio can lead to various issues. [`ExCmd`](https://hexdocs.pm/ex_cmd/readme.html) and [`Exile`](https://hexdocs.pm/exile/readme.html) libraries address these concerns. Along with that they provide beloved streaming capabilities. In otherwords they let you stream input, output _all the way down_.
+
+Let's take an example to illustrate the streaming capabilities. Here, we'll create an HTTP server to watermark a video.
+
+The server should perform the following:
+
+* accept request with video URL and watermark text
+* stream input video
+* adds text as watermark using FFmpeg
+* stream output video as response, using chunked encoding
+
+## FFmpeg
+
+We need a sample video to test. Let's fetch and display it using `Kino`
+
+```elixir
+# download sample video
+video_url =
+  "https://upload.wikimedia.org/wikipedia/commons/transcoded/8/81/Beachfront_B-Roll-_Fireworks_%28Free_to_Use_HD_Stock_Video_Footage%29.webm/Beachfront_B-Roll-_Fireworks_%28Free_to_Use_HD_Stock_Video_Footage%29.webm.480p.vp9.webm"
+
+tmp = System.tmp_dir!()
+input_path = Path.join(tmp, "input.webm")
+video = Req.get!(video_url).body
+:ok = File.write!(input_path, video)
+
+# lets display it
+File.read!(input_path)
+|> Kino.Video.new(:mp4, autoplay: true, muted: true)
+```
+
+Creating helper module to construct `ffmpeg` command to add watermark. The details about the command parameters are not important.
+
+```elixir
+defmodule FFmpeg do
+  @moduledoc """
+  Returns ffmpeg command as list of string
+  """
+
+  @doc """
+  Returns ffmpeg command with arguments for adding watermark
+  """
+  @spec watermark(String.t(), String.t(), String.t(), map()) :: [String.t()]
+  def watermark(input, text, output, text_opts \\ []) do
+    # add text with white color font and transparency of 0.5
+    filter_graph =
+      [
+        text: "'#{text}'",
+        fontsize: text_opts[:fontsize] || 80,
+        fontcolor: "white",
+        x: text_opts[:x] || 300,
+        y: text_opts[:y] || 350,
+        alpha: text_opts[:alpha] || 0.5
+      ]
+      |> Enum.map(fn {k, v} -> "#{k}=#{v}" end)
+      |> Enum.join(":")
+
+    [
+      "ffmpeg",
+      "-y",
+      ["-i", input],
+      ["-vf", "drawtext=#{filter_graph}"],
+      ~w(-codec:a copy),
+      # output should be MP4
+      ~w(-f mp4),
+      # add flag to fix error while reading the stream
+      ~w(-movflags empty_moov),
+      # output location
+      output
+    ]
+    |> List.flatten()
+  end
+end
+```
+
+Let's see it in action by giving it the sample video we have!
+
+```elixir
+output_path = Path.join(tmp, "output.mp4")
+
+["ffmpeg" | args] = cmd = FFmpeg.watermark(input_path, "Fireworks", output_path, x: 220, y: 30)
+
+# print the constructed ffmpeg command
+IO.puts(Enum.join(cmd, " "))
+
+# run the command, this might take while
+{"", 0} = System.cmd(System.find_executable("ffmpeg"), args)
+
+File.read!(output_path)
+|> Kino.Video.new(:mp4, autoplay: true, muted: true)
+```
+
+## Streaming Output Video
+
+The method with `System.cmd` works, but it makes us create and deal with temporary files unnecessarily. If you're using the output right away and then throwing it away, a better way is to use streams. Ffmpeg can read from and write to UNIX pipes, and you can use this easily with `ExCmd`.
+
+```elixir
+# `pipe:0` : read input from STDIN
+# `-` : write output to STDOUT
+cmd = FFmpeg.watermark("pipe:0", "Fireworks", "-", x: 220, y: 30)
+
+# ExCmd returns output as lazy stream. You can also replace `ExCmd` with `Exile`
+output_stream = ExCmd.stream!(cmd, input: video)
+
+# To display the video, Kino.Video needs it as binary blob.
+# So we have collect stream as binary
+Enum.into(output_stream, <<>>)
+|> Kino.Video.new(:mp4, autoplay: true, muted: true)
+```
+
+## FFmpeg Server
+
+With that, the only thing remaining is to set up the HTTP server. We utilize Plug to create a `GET /watermark` route. This route accepts a video URL and watermark text as query parameters and returns the output video as a stream using chunked response, maximizing the streaming capability.
+
+### Streaming Input
+
+ExCmd facilitates input streaming by supporting both `Enumerable` and `Collectable`. Given that HTTP Client (`Req`) we are using supports pushing responses to `Collectable`, we can simply leverage that capability.
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+output_stream =
+  ExCmd.stream!(cmd,
+    input: fn ex_cmd_sink ->
+      # Req pushes video input to ex_cmd as chunks
+      Req.get!(video_url, into: ex_cmd_sink)
+    end)
+```
+
+### Streaming Output
+
+Achieving streaming response can be done using `Plug.Conn.chunk/2`, allowing us to push chunks as soon as they become available from the ffmpeg command.
+
+```elixir
+defmodule FFmpegServer do
+  @moduledoc """
+  HTTP server for demonstrating FFmpeg streaming
+  """
+  use Plug.Router
+  require Logger
+
+  plug(Plug.Parsers, parsers: [], pass: ["*/*"])
+  plug(:match)
+  plug(:dispatch)
+
+  get "/watermark" do
+    %{"video_url" => video_url, "text" => text} = conn.params
+
+    cmd = FFmpeg.watermark("pipe:0", text, "-", x: 20, y: 20)
+    output_stream = ExCmd.stream!(cmd, input: &Req.get!(video_url, into: &1))
+
+    conn =
+      conn
+      |> put_resp_content_type("video/mp4")
+      |> send_chunked(200)
+
+    Enum.reduce_while(output_stream, conn, fn chunk, conn ->
+      case chunk(conn, chunk) do
+        {:ok, conn} ->
+          Logger.debug("Sent #{IO.iodata_length(chunk)} bytes")
+          {:cont, conn}
+
+        {:error, :closed} ->
+          Logger.debug("Connection closed")
+          {:halt, conn}
+      end
+    end)
+  end
+end
+```
+
+Start the server at port `8989`
+
+```elixir
+webserver = {Bandit, plug: FFmpegServer, scheme: :http, port: 8989}
+{:ok, supervisor} = Supervisor.start_link([webserver], strategy: :one_for_one)
+```
+
+Now you can test it at command line using `curl`
+
+```sh
+curl \
+  --include \
+  --get 'http://127.0.0.1:8989/watermark' \
+  --data-urlencode 'text=FFmpeg Rocks!' \
+  --data-urlencode 'video_url=https://upload.wikimedia.org/wikipedia/commons/transcoded/8/81/Beachfront_B-Roll-_Fireworks_%28Free_to_Use_HD_Stock_Video_Footage%29.webm/Beachfront_B-Roll-_Fireworks_%28Free_to_Use_HD_Stock_Video_Footage%29.webm.480p.vp9.webm'
+```
+
+You can even directly play the video stream from command line using `ffplay`!
+
+```sh
+curl \
+  --get 'http://127.0.0.1:8989/watermark' \
+  --data-urlencode 'text=FFmpeg Rocks!' \
+  --data-urlencode 'video_url=https://upload.wikimedia.org/wikipedia/commons/transcoded/8/81/Beachfront_B-Roll-_Fireworks_%28Free_to_Use_HD_Stock_Video_Footage%29.webm/Beachfront_B-Roll-_Fireworks_%28Free_to_Use_HD_Stock_Video_Footage%29.webm.480p.vp9.webm' \
+  | ffplay -
+```
+
+Notice the logs in the Livebook cell above. As you watch the video, observe how the video chunks are fetched, encoded, and pushed as responses in chunks, together, on the fly!
+
+Another noteworthy feature is that if the connection drops midway (close `ffplay` using `Ctrl+C`), the streaming pipeline stops gracefully, avoiding the wasteful encoding of the entire video.
+
+```elixir
+# stop the server
+Supervisor.stop(supervisor)
+```
