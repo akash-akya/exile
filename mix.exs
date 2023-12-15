@@ -14,6 +14,7 @@ defmodule Exile.MixProject do
       make_targets: ["all"],
       make_clean: ["clean"],
       deps: deps(),
+      aliases: aliases(),
 
       # Package
       package: package(),
@@ -60,5 +61,15 @@ defmodule Exile.MixProject do
       {:excoveralls, "~> 0.15", only: :test},
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false}
     ]
+  end
+
+  defp aliases do
+    [docs: ["docs", &copy_images/1]]
+  end
+
+  defp copy_images(_) do
+    File.cp_r("./images", "./doc/images/", fn source, destination ->
+      IO.gets("Overwriting #{destination} by #{source}. Type y to confirm. ") == "y\n"
+    end)
   end
 end
