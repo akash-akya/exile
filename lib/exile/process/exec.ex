@@ -86,12 +86,16 @@ defmodule Exile.Process.Exec do
       # FDs are managed by the NIF resource life-cycle
       {:ok, stdout} = Nif.nif_create_fd(stdout_fd)
       {:ok, stdin} = Nif.nif_create_fd(stdin_fd)
+      {:ok, stderr} = Nif.nif_create_fd(stderr_fd)
 
-      {:ok, stderr} =
-        if stderr == :consume do
-          Nif.nif_create_fd(stderr_fd)
+      stderr =
+        if stderr_mode == :consume do
+          stderr
         else
-          {:ok, nil}
+          # we have to explicitly close FD passed over socket.
+          # Since it will be tracked by the OS and kept open until we close.
+          Nif.nif_close(stderr)
+          nil
         end
 
       {stdin, stdout, stderr}

@@ -45,6 +45,33 @@ defmodule Exile.SyncProcessTest do
     assert %{active: 0, workers: 0} = DynamicSupervisor.count_children(Exile.WatcherSupervisor)
   end
 
+  test "FDs are not leaked" do
+    before_count = opened_pipes()
+
+    for _ <- 1..100 do
+      {:ok, s} = Process.start_link(~w(date))
+      :ok = Process.close_stdin(s)
+      assert {:ok, _} = Process.read_any(s, 100)
+      assert :eof = Process.read_any(s, 100)
+      assert {:ok, 0} = Process.await_exit(s, 100)
+    end
+
+    # let the dust settle
+    :timer.sleep(2000)
+
+    after_count = opened_pipes()
+
+    assert before_count == after_count
+  end
+
+  defp opened_pipes do
+    {pipe_count, 0} = System.shell(~s(lsof -a -p #{:os.getpid()} | grep " PIPE " | wc -l))
+
+    pipe_count
+    |> String.trim()
+    |> String.to_integer()
+  end
+
   defp stop_all_children(sup) do
     DynamicSupervisor.which_children(sup)
     |> Enum.each(fn {_, pid, _, _} ->
