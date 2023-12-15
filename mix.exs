@@ -1,7 +1,7 @@
 defmodule Exile.MixProject do
   use Mix.Project
 
-  @version "0.7.0"
+  @version "0.8.0"
   @scm_url "https://github.com/akash-akya/exile"
 
   def project do
