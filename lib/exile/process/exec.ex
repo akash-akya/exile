@@ -3,6 +3,7 @@ defmodule Exile.Process.Exec do
 
   alias Exile.Process.Nif
   alias Exile.Process.Pipe
+  alias Exile.Process.State
 
   @type args :: %{
           cmd_with_args: [String.t()],
@@ -10,20 +11,14 @@ defmodule Exile.Process.Exec do
           env: [{String.t(), String.t()}]
         }
 
-  @spec start(args, boolean()) :: %{
+  @spec start(args, State.stderr_mode()) :: %{
           port: port,
           stdin: non_neg_integer(),
           stdout: non_neg_integer(),
           stderr: non_neg_integer()
         }
-  def start(
-        %{
-          cmd_with_args: cmd_with_args,
-          cd: cd,
-          env: env
-        },
-        stderr
-      ) do
+  def start(args, stderr) do
+    %{cmd_with_args: cmd_with_args, cd: cd, env: env} = args
     socket_path = socket_path()
     {:ok, sock} = :socket.open(:local, :stream, :default)
 
@@ -78,8 +73,8 @@ defmodule Exile.Process.Exec do
 
   @socket_timeout 2000
 
-  @spec receive_fds(:socket.socket(), boolean) :: {Pipe.fd(), Pipe.fd(), Pipe.fd()}
-  defp receive_fds(lsock, stderr) do
+  @spec receive_fds(:socket.socket(), State.stderr_mode()) :: {Pipe.fd(), Pipe.fd(), Pipe.fd()}
+  defp receive_fds(lsock, stderr_mode) do
     {:ok, sock} = :socket.accept(lsock, @socket_timeout)
 
     try do
@@ -91,12 +86,16 @@ defmodule Exile.Process.Exec do
       # FDs are managed by the NIF resource life-cycle
       {:ok, stdout} = Nif.nif_create_fd(stdout_fd)
       {:ok, stdin} = Nif.nif_create_fd(stdin_fd)
+      {:ok, stderr} = Nif.nif_create_fd(stderr_fd)
 
-      {:ok, stderr} =
-        if stderr == :consume do
-          Nif.nif_create_fd(stderr_fd)
+      stderr =
+        if stderr_mode == :consume do
+          stderr
         else
-          {:ok, nil}
+          # we have to explicitly close FD passed over socket.
+          # Since it will be tracked by the OS and kept open until we close.
+          Nif.nif_close(stderr)
+          nil
         end
 
       {stdin, stdout, stderr}

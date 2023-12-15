@@ -4,14 +4,45 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/exile.svg)](https://hex.pm/packages/exile)
 [![docs](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/exile/)
 
-Exile is an alternative to [ports](https://hexdocs.pm/elixir/Port.html) for running external programs. It provides back-pressure, non-blocking io, and tries to fix ports issues.
+Exile is an alternative to
+[ports](https://hexdocs.pm/elixir/Port.html) for running external
+programs. It let you stream input and output to external program with
+back-pressure, non-blocking IO. Also, it fixes other port related
+issues such as selectively closing stdin.
 
-Exile is built around the idea of having demand-driven, asynchronous
-interaction with external process. Think of streaming a video through
-`ffmpeg` to serve a web request. Exile internally uses NIF. See
-[Rationale](#rationale) for details. It also provides stream
-abstraction for interacting with an external program. For example,
-getting audio out of a stream is as simple as
+### Port IO Issue
+
+With [Port](https://hexdocs.pm/elixir/Port.html) if you run external
+program which generates lot of output to stdout. Something like
+streaming video using `ffmpeg` to serve a web request.  If you try
+this with port then quickly going to run out of memory.  Because port
+IO is not not demand driven. It consumes output from stdout as soon as
+it is available and `send` it to process mailbox. And as you know beam
+process mailbox is unbounded, so output sits there waiting to be `receive`d.
+
+#### Lets take an example.
+
+Memory consumption with Port
+
+```elixir
+Port.open({:spawn_executable, "/bin/cat"}, [{:args, ["/dev/random"]}, {:line, 10}, :binary, :use_stdio])
+```
+
+![Port memory consumption](./images/port.png)
+
+#### Memory consumption with Exile
+
+```elixir
+Exile.stream!(~w(cat /dev/random))
+|> Enum.each(fn data ->
+  IO.puts(IO.iodata_length(data))
+end)
+```
+
+![Exile memory consumption](./images/exile.png)
+
+Exile achieves this by implementing demand-driven, asynchronous IO mechanism with external process using NIF.
+See [Rationale](#rationale) for details. For example, getting audio out of a stream is as simple as
 
 ``` elixir
 Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_video.mkv", [], 65_535))

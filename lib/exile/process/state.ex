@@ -9,6 +9,8 @@ defmodule Exile.Process.State do
 
   @type read_mode :: :stdout | :stderr | :stdout_or_stderr
 
+  @type stderr_mode :: :console | :disable | :consume
+
   @type pipes :: %{
           stdin: Pipe.t(),
           stdout: Pipe.t(),
@@ -27,7 +29,7 @@ defmodule Exile.Process.State do
           port: port(),
           pipes: pipes,
           status: status,
-          stderr: :console | :disable | :consume,
+          stderr: stderr_mode,
           operations: Operations.t(),
           exit_ref: reference(),
           monitor_ref: reference()
