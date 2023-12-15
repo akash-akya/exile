@@ -147,7 +147,6 @@ static int exec_process(char const *bin, char *const *args, int socket,
   }
 
   if (strcmp(stderr_str, "consume") == 0) {
-    debug("== %d", strcmp(stderr_str, "consume"));
     close(STDERR_FILENO);
     close(r_cmderr);
     if (dup2(w_cmderr, STDERR_FILENO) < 0) {

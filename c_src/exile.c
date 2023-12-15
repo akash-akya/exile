@@ -196,7 +196,7 @@ static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
 
   return make_ok(env, term);
 
- error_exit:
+error_exit:
   enif_release_resource(fd);
   return ATOM_ERROR;
 }
