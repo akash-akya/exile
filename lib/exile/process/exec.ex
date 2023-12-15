@@ -3,6 +3,7 @@ defmodule Exile.Process.Exec do
 
   alias Exile.Process.Nif
   alias Exile.Process.Pipe
+  alias Exile.Process.State
 
   @type args :: %{
           cmd_with_args: [String.t()],
@@ -10,20 +11,14 @@ defmodule Exile.Process.Exec do
           env: [{String.t(), String.t()}]
         }
 
-  @spec start(args, boolean()) :: %{
+  @spec start(args, State.stderr_mode()) :: %{
           port: port,
           stdin: non_neg_integer(),
           stdout: non_neg_integer(),
           stderr: non_neg_integer()
         }
-  def start(
-        %{
-          cmd_with_args: cmd_with_args,
-          cd: cd,
-          env: env
-        },
-        stderr
-      ) do
+  def start(args, stderr) do
+    %{cmd_with_args: cmd_with_args, cd: cd, env: env} = args
     socket_path = socket_path()
     {:ok, sock} = :socket.open(:local, :stream, :default)
 
@@ -78,8 +73,8 @@ defmodule Exile.Process.Exec do
 
   @socket_timeout 2000
 
-  @spec receive_fds(:socket.socket(), boolean) :: {Pipe.fd(), Pipe.fd(), Pipe.fd()}
-  defp receive_fds(lsock, stderr) do
+  @spec receive_fds(:socket.socket(), State.stderr_mode()) :: {Pipe.fd(), Pipe.fd(), Pipe.fd()}
+  defp receive_fds(lsock, stderr_mode) do
     {:ok, sock} = :socket.accept(lsock, @socket_timeout)
 
     try do
