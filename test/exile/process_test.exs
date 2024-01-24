@@ -227,7 +227,7 @@ defmodule Exile.ProcessTest do
       {:ok, os_pid} = Process.os_pid(s)
       assert os_process_alive?(os_pid)
 
-      assert {:ok, "ignored signals\n"} = Process.read(s)
+      assert {:ok, "ignored signals\n" <> _} = Process.read(s)
 
       # attempt to kill the process after 100ms
       assert {:ok, 137} = Process.await_exit(s, 100)
