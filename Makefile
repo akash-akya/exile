@@ -7,14 +7,14 @@ CFLAGS ?= -Wall -Werror -Wextra -Wno-unused-parameter -pedantic -O2 -fPIC
 
 ifeq ($(UNAME), Darwin)
 	TARGET_CFLAGS ?= -undefined dynamic_lookup -dynamiclib -Wextra
-else ifeq (${UNAME}, NetBSD)
-	# c_src/spawner.c fails to compile on NetBSD and Darwin with -D_POSIX_C_SOURCE=200809L
-	# Should be fixed once NetBSD 10 get released:
-	# http://gnats.netbsd.org/cgi-bin/query-pr-single.pl?number=57871
-	TARGET_CFLAGS ?= -shared
-else
+else ifeq (${UNAME}, Linux)
 	# -D_POSIX_C_SOURCE=200809L needed on musl
 	CFLAGS += -D_POSIX_C_SOURCE=200809L
+	TARGET_CFLAGS ?= -shared
+else
+	# c_src/spawner.c fails to compile on FreeBSD, NetBSD, and Darwin with -D_POSIX_C_SOURCE=200809L
+	# Should be fixed once NetBSD 10 get released:
+	# http://gnats.netbsd.org/cgi-bin/query-pr-single.pl?number=57871
 	TARGET_CFLAGS ?= -shared
 endif
 
