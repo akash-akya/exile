@@ -157,7 +157,7 @@ defmodule Exile.Process.Exec do
   defp normalize_cd(cd) do
     case cd do
       nil ->
-        {:ok, ''}
+        {:ok, ~c""}
 
       cd when is_binary(cd) ->
         if File.exists?(cd) && File.dir?(cd) do
