@@ -9,7 +9,7 @@ defmodule Exile.Process.State do
 
   @type read_mode :: :stdout | :stderr | :stdout_or_stderr
 
-  @type stderr_mode :: :console | :disable | :consume
+  @type stderr_mode :: :console | :redirect_to_stdout | :disable | :consume
 
   @type pipes :: %{
           stdin: Pipe.t(),

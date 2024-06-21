@@ -303,8 +303,9 @@ defmodule Exile.Process do
     * `stderr`  -  different ways to handle stderr stream.
   possible values `:console`, `:disable`, `:stream`.
         1. `:console`  -  stderr output is redirected to console (Default)
-        2. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
-        3. `:consume`  -  connects stderr for the consumption. When set to stream the output must be consumed to
+        2. `:redirect_to_stdout`  -  stderr output is redirected to stdout
+        3. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
+        4. `:consume`  -  connects stderr for the consumption. When set to stream the output must be consumed to
   avoid external program from blocking.
 
   Caller of the process will be the owner owner of the Exile Process.

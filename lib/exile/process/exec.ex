@@ -52,7 +52,7 @@ defmodule Exile.Process.Exec do
              cmd_with_args: nonempty_list(),
              cd: charlist,
              env: env,
-             stderr: :console | :disable | :consume
+             stderr: :console | :redirect_to_stdout | :disable | :consume
            }}
           | {:error, String.t()}
   def normalize_exec_args(cmd_with_args, opts) do
@@ -192,18 +192,19 @@ defmodule Exile.Process.Exec do
     end
   end
 
-  @spec normalize_stderr(stderr :: :console | :disable | :consume | nil) ::
-          {:ok, :console | :disable | :consume} | {:error, String.t()}
+  @spec normalize_stderr(stderr :: :console | :redirect_to_stdout | :disable | :consume | nil) ::
+          {:ok, :console | :redirect_to_stdout | :disable | :consume} | {:error, String.t()}
   defp normalize_stderr(stderr) do
     case stderr do
       nil ->
         {:ok, :console}
 
-      stderr when stderr in [:console, :disable, :consume] ->
+      stderr when stderr in [:redirect_to_stdout, :console, :disable, :consume] ->
         {:ok, stderr}
 
       _ ->
-        {:error, ":stderr must be an atom and one of :console, :disable, :consume"}
+        {:error,
+         ":stderr must be an atom and one of :redirect_to_stdout, :console, :disable, :consume"}
     end
   end
 

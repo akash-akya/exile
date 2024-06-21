@@ -146,9 +146,19 @@ static int exec_process(char const *bin, char *const *args, int socket,
     _exit(FORK_EXEC_FAILURE);
   }
 
-  if (strcmp(stderr_str, "consume") == 0) {
+  if (strcmp(stderr_str, "redirect_to_stdout") == 0) {
     close(STDERR_FILENO);
     close(r_cmderr);
+    close(w_cmderr);
+
+    if (dup2(w_cmdout, STDERR_FILENO) < 0) {
+      perror("[spawner] failed to redirect stderr to stdout");
+      _exit(FORK_EXEC_FAILURE);
+    }
+  } else if (strcmp(stderr_str, "consume") == 0) {
+    close(STDERR_FILENO);
+    close(r_cmderr);
+
     if (dup2(w_cmderr, STDERR_FILENO) < 0) {
       perror("[spawner] failed to dup to stderr");
       _exit(FORK_EXEC_FAILURE);

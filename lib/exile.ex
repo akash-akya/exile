@@ -197,8 +197,9 @@ defmodule Exile do
 
     * `stderr`  -  different ways to handle stderr stream. possible values `:console`, `:disable`, `:stream`.
         1. `:console`  -  stderr output is redirected to console (Default)
-        2. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
-        3. `:consume`  -  connects stderr for the consumption. The output stream will contain stderr
+        2. `:redirect_to_stdout`  -  stderr output is redirected to stdout
+        3. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
+        4. `:consume`  -  connects stderr for the consumption. The output stream will contain stderr
   data along with stdout. Stream data will be either `{:stdout, iodata}` or `{:stderr, iodata}`
   to differentiate different streams. See example below.
 
