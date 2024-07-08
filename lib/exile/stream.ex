@@ -297,11 +297,12 @@ defmodule Exile.Stream do
       nil ->
         {:ok, :console}
 
-      stderr when stderr in [:console, :disable, :consume] ->
+      stderr when stderr in [:console, :redirect_to_stdout, :disable, :consume] ->
         {:ok, stderr}
 
       _ ->
-        {:error, ":stderr must be an atom and one of :console, :disable, :consume"}
+        {:error,
+         ":stderr must be an atom and one of :console, :redirect_to_stdout, :disable, :consume"}
     end
   end
 

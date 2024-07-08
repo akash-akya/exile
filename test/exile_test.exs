@@ -46,6 +46,53 @@ defmodule ExileTest do
     assert IO.iodata_to_binary(stderr) == "Hello World\n"
   end
 
+  test "stderr redirect_to_stdout" do
+    merged_output =
+      Exile.stream!(
+        [fixture("write_stderr.sh"), "Hello World"],
+        stderr: :redirect_to_stdout
+      )
+      |> Enum.to_list()
+      |> IO.iodata_to_binary()
+
+    assert merged_output == "Hello World\n"
+  end
+
+  test "order must be preserved when stderr is redirect to stdout" do
+    merged_output =
+      Exile.stream!(
+        ["sh", "-c", "for s in $(seq 1 10); do echo stdout $s; echo stderr $s >&2; done"],
+        stderr: :redirect_to_stdout,
+        ignore_epipe: true
+      )
+      |> Enum.to_list()
+      |> IO.iodata_to_binary()
+      |> String.trim()
+
+    assert [
+             "stdout 1",
+             "stderr 1",
+             "stdout 2",
+             "stderr 2",
+             "stdout 3",
+             "stderr 3",
+             "stdout 4",
+             "stderr 4",
+             "stdout 5",
+             "stderr 5",
+             "stdout 6",
+             "stderr 6",
+             "stdout 7",
+             "stderr 7",
+             "stdout 8",
+             "stderr 8",
+             "stdout 9",
+             "stderr 9",
+             "stdout 10",
+             "stderr 10"
+           ] == String.split(merged_output, "\n")
+  end
+
   test "multiple streams" do
     script = """
     for i in {1..1000}; do
