@@ -106,11 +106,13 @@ defmodule Exile.Process do
 
   Pipe owner can read or write date to the owned pipe. `:stderr` by
   default is connected to console, data written to stderr will appear on
-  the console. You can enable reading stderr by passing `stderr: :consume`
-  during process creation.
+  the console.
 
-  Special function `Exile.Process.read_any/2` can be used to read
-  from either stdout or stderr whichever has the data available.
+  If you want to read stderr you have two options
+
+  * `:redirect_to_stdout`: stderr data will be redirected to stdout. This is similar to `:stderr_to_stdout` option present in [Ports](https://www.erlang.org/doc/apps/erts/erlang.html#open_port/2). With this option when you read stdout you will see both stdout & stderr combined and you won't be able differentiate streams separately
+
+  * `:consume`: stderr data can be consumed separately using `Exile.Process.read_stderr/2`. Special function `Exile.Process.read_any/2` can be used to read from either stdout or stderr whichever has the data available. See the examples for more details.
 
   All Pipe operations blocks the caller to have blocking as natural
   back-pressure and to make the API simple. This is an important
@@ -300,8 +302,7 @@ defmodule Exile.Process do
     * `env`  -  a list of tuples containing environment key-value.
   These can be accessed in the external program
 
-    * `stderr`  -  different ways to handle stderr stream.
-  possible values `:console`, `:disable`, `:stream`.
+    * `stderr`  -  different ways to handle stderr stream. Possible values `:console`, `:redirect_to_stdout`, `:disable`, `:stream`.
         1. `:console`  -  stderr output is redirected to console (Default)
         2. `:redirect_to_stdout`  -  stderr output is redirected to stdout
         3. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
