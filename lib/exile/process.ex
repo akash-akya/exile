@@ -104,27 +104,84 @@ defmodule Exile.Process do
 
   ### Pipe Operations
 
-  Pipe owner can read or write date to the owned pipe. `:stderr` by
-  default is connected to console, data written to stderr will appear on
-  the console.
+  Only Pipe owner can read or write date to the owned pipe.
+  All Pipe operations (read/write) blocks the caller as a mechanism
+  to put back-pressure, and this also makes the API simpler.
+  This is same as how command-line programs works on the shell,
+  along with pipes in-between, Example: `cat larg-file | grep "foo"`.
+  Internally Exile uses asynchronous IO APIs to avoid blocking VM
+  (by default NIF calls blocks the VM scheduler),
+  so you can open several pipes and do concurrent IO operations without
+  blocking VM.
 
-  If you want to read stderr you have two options
 
-  * `:redirect_to_stdout`: stderr data will be redirected to stdout. This is similar to `:stderr_to_stdout` option present in [Ports](https://www.erlang.org/doc/apps/erts/erlang.html#open_port/2). With this option when you read stdout you will see both stdout & stderr combined and you won't be able differentiate streams separately
+  ### `stderr`
 
-  * `:consume`: stderr data can be consumed separately using `Exile.Process.read_stderr/2`. Special function `Exile.Process.read_any/2` can be used to read from either stdout or stderr whichever has the data available. See the examples for more details.
+  by default is `:stderr` is connected to console, data written to
+  stderr will appear on the console.
 
-  All Pipe operations blocks the caller to have blocking as natural
-  back-pressure and to make the API simple. This is an important
-  feature of Exile, that is the ability to block caller when the stdio
-  buffer is full, exactly similar to how programs works on the shell
-  with pipes between then `cat larg-file | grep "foo"`. Internally it
-  does not block the Exile process or VM (which is typically the case
-  with NIF calls). Because of this user can make concurrent read,
-  write to different pipes from separate processes. Internally Exile
-  uses asynchronous IO APIs to avoid blocking of VM or VM process.
+  You can change the behavior by setting `:stderr`:
 
-  Reading from stderr
+    1. `:console`  -  stderr output is redirected to console (Default)
+    2. `:redirect_to_stdout`  -  stderr output is redirected to stdout
+    2. `:consume`  -  stderr output read separately, allowing you to consume it separately from stdout. See below for more details
+    4. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output. See below for more details.
+
+
+  ### Using `redirect_to_stdout`
+
+  stderr data will be redirected to stdout. When you read stdout
+  you will see both stdout & stderr combined and you won't be
+  able differentiate stdout and stderr separately.
+  This is similar to `:stderr_to_stdout` option present in
+  [Ports](https://www.erlang.org/doc/apps/erts/erlang.html#open_port/2).
+
+  > #### Unexpected Behaviors {: .warning}
+  >
+  > On many systems, `stdout` and `stderr` are separated. And between
+  > the source program to Exile, via the kernel, there are several places
+  > that may buffer data, even temporarily, before Exile is ready
+  > to read them. There is no enforced ordering of the readiness of
+  > these independent buffers for Exile to make use of.
+  >
+  > This can result in unexpected behavior, including:
+  >
+  >  * mangled data, for example, UTF-8 characters may be incomplete
+  > until an additional buffered segment is released on the same
+  > source
+  >  * raw data, where binary data sent on one source, is incompatible
+  > with data sent on the other source.
+  >  * interleaved data, where what appears to be synchronous, is not
+  >
+  > In short, the two streams might be combined at arbitrary byte position
+  > leading to above mentioned issue.
+  >
+  > Most well-behaved command-line programs are unlikely to exhibit
+  > this, but you need to be aware of the risk.
+  >
+  > A good example of this unexpected behavior is streaming JSON from
+  > an external tool to Exile, where normal JSON output is expected on
+  > stdout, and errors or warnings via stderr. In the case of an
+  > unexpected error, the stdout stream could be incomplete, or the
+  > stderr message might arrive before the closing data on the stdout
+  > stream.
+
+
+  ### Using `consume`
+
+  stderr data can be consumed separately using
+  `Exile.Process.read_stderr/2`. Special function
+  `Exile.Process.read_any/2` can be used to read from either stdout or
+  stderr whichever has the data available. See the examples for more
+  details.
+
+
+  > #### Unexpected Behaviors {: .warning}
+  >
+  > When set, the `stderr` output **MUST** be consumed to
+  > avoid blocking the external program when stderr buffer is full.
+
+  Reading from stderr using `read_stderr`
 
   ```
   # write "Hello" to stdout and "World" to stderr
@@ -302,12 +359,14 @@ defmodule Exile.Process do
     * `env`  -  a list of tuples containing environment key-value.
   These can be accessed in the external program
 
-    * `stderr`  -  different ways to handle stderr stream. Possible values `:console`, `:redirect_to_stdout`, `:disable`, `:stream`.
+    * `stderr`  -  different ways to handle stderr stream.
         1. `:console`  -  stderr output is redirected to console (Default)
         2. `:redirect_to_stdout`  -  stderr output is redirected to stdout
         3. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
-        4. `:consume`  -  connects stderr for the consumption. When set to stream the output must be consumed to
+        4. `:consume`  -  connects stderr for the consumption. When set, the stderr output must be consumed to
   avoid external program from blocking.
+
+      See [`:stderr`](#module-stderr) for more details and issues associated with them
 
   Caller of the process will be the owner owner of the Exile Process.
   And default owner of all opened pipes.

@@ -203,13 +203,15 @@ defmodule Exile do
   Chunk size can be less than the `max_chunk_size` depending on the amount of
   data available to be read. Defaults to `65_535`
 
-    * `stderr`  -  different ways to handle stderr stream. possible values `:console`, `:redirect_to_stdout`, `:disable`, `:stream`.
+    * `stderr`  -  different ways to handle stderr stream.
         1. `:console`  -  stderr output is redirected to console (Default)
         2. `:redirect_to_stdout`  -  stderr output is redirected to stdout
         3. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
         4. `:consume`  -  connects stderr for the consumption. The output stream will contain stderr
   data along with stdout. Stream data will be either `{:stdout, iodata}` or `{:stderr, iodata}`
   to differentiate different streams. See example below.
+
+       See [`:stderr`](`m:Exile.Process#module-stderr`) for more details and issues associated with them.
 
     * `ignore_epipe` - When set to true, reader can exit early without raising error.
   Typically writer gets `EPIPE` error on write when program terminate prematurely.
