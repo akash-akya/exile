@@ -49,7 +49,7 @@ jobs:
       - run: mix test --exclude skip:true --trace
 
   macos:
-    runs-on: macos-11
+    runs-on: macos-14
     name: Test - Elixir (MacOS)
     steps:
       - uses: actions/checkout@v4
