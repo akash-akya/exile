@@ -340,6 +340,8 @@ defmodule Exile.Process do
 
   @type exit_status :: non_neg_integer
 
+  @type os_pid :: pos_integer
+
   @default_opts [env: [], stderr: :console]
   @default_buffer_size 65_535
   @os_signal_timeout 1000
@@ -595,7 +597,7 @@ defmodule Exile.Process do
   This is meant only for debugging. Avoid interacting with the
   external process directly
   """
-  @spec os_pid(t) :: pos_integer()
+  @spec os_pid(t) :: os_pid()
   def os_pid(process) do
     GenServer.call(process.pid, :os_pid, :infinity)
   end
@@ -626,6 +628,9 @@ defmodule Exile.Process do
     {:noreply, exec(state)}
   end
 
+  # certain programs expects SIGTERM multiple times
+  @exit_seq [:no_signal, :sigterm, :sigterm, :sigkill]
+
   @impl true
   def handle_cast({:prepare_exit, caller, timeout}, state) do
     state =
@@ -648,9 +653,9 @@ defmodule Exile.Process do
         if timeout == :infinity do
           {:noreply, state}
         else
-          total_stages = 3
-          stage_timeout = div(timeout, total_stages)
-          handle_info({:prepare_exit, :normal_exit, stage_timeout}, state)
+          step_timeout = div(timeout, length(@exit_seq))
+          exit_seq = Enum.map(@exit_seq, &{&1, step_timeout})
+          handle_info({:run_exit_sequence, exit_seq}, state)
         end
     end
   end
@@ -735,28 +740,24 @@ defmodule Exile.Process do
   end
 
   @impl true
-  def handle_info({:prepare_exit, current_stage, timeout}, %{status: status, port: port} = state) do
-    cond do
-      status != :running ->
+  def handle_info({:run_exit_sequence, exit_seq}, %{status: status, port: port} = state) do
+    case exit_seq do
+      _ when status != :running ->
+        # we are done if port is not running
         {:noreply, state}
 
-      current_stage == :normal_exit ->
-        Elixir.Process.send_after(self(), {:prepare_exit, :sigterm, timeout}, timeout)
-        {:noreply, state}
+      [] ->
+        # This should never happen, since SIGKILL signal can not be
+        # ignored by the OS process
+        {:stop, :kill_timeout, state}
 
-      current_stage == :sigterm ->
-        signal(port, :sigterm)
-        Elixir.Process.send_after(self(), {:prepare_exit, :sigkill, timeout}, timeout)
-        {:noreply, state}
+      [{signal, timeout} | exit_seq] ->
+        if signal != :no_signal do
+          signal(port, signal)
+        end
 
-      current_stage == :sigkill ->
-        signal(port, :sigkill)
-        Elixir.Process.send_after(self(), {:prepare_exit, :stop, timeout}, timeout)
+        Elixir.Process.send_after(self(), {:run_exit_sequence, exit_seq}, timeout)
         {:noreply, state}
-
-      # this should never happen, since sigkill signal can not be ignored by the OS process
-      current_stage == :stop ->
-        {:stop, :sigkill_timeout, state}
     end
   end
 

@@ -208,7 +208,7 @@ defmodule Exile.ProcessTest do
           assert os_process_alive?(os_pid)
 
           # ensure the script set the correct signal handlers (handlers to ignore signal)
-          assert {:ok, "ignored signals\n"} = Process.read(s)
+          assert {:ok, "ignored signals\n" <> _} = Process.read(s)
 
           # exit without waiting for the exile process
           {os_pid, s}
