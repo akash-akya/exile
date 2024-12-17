@@ -63,6 +63,7 @@ defmodule Exile.Watcher do
 
     dead? =
       Enum.reduce_while(@term_seq, false, fn {signal, wait_time}, _dead? ->
+        Logger.debug("Sending signal: #{signal} with wait_time: #{wait_time}")
         Nif.nif_kill(os_pid, signal)
 
         # check process_status first before going to sleep
@@ -70,7 +71,7 @@ defmodule Exile.Watcher do
           Logger.debug("External program terminated successfully with signal: #{signal}")
           {:halt, true}
         else
-          Logger.debug("Failed to stop with signal: #{signal}, wait_time: #{wait_time}")
+          Logger.debug("Failed to stop with signal: #{signal}")
           {:cont, false}
         end
       end)
