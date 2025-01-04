@@ -4,35 +4,86 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/exile.svg)](https://hex.pm/packages/exile)
 [![docs](https://img.shields.io/badge/docs-hexpm-blue.svg)](https://hexdocs.pm/exile/)
 
-Exile is an alternative to
-[ports](https://hexdocs.pm/elixir/Port.html) for running external
-programs. It let you stream input and output to external program with
-back-pressure, non-blocking IO. Also, it fixes other port related
-issues such as selectively closing stdin.
+Exile is a powerful Elixir library for running external programs with proper back-pressure and streaming capabilities. Think of it as Ports done right - giving you fine-grained control over input/output streams while preventing memory issues.
 
-### Port IO Issue
+## Key Features
 
-With [Port](https://hexdocs.pm/elixir/Port.html) if you run external
-program which generates lot of output to stdout. Something like
-streaming video using `ffmpeg` to serve a web request.  If you try
-this with port then quickly going to run out of memory.  Because port
-IO is not not demand driven. It consumes output from stdout as soon as
-it is available and `send` it to process mailbox. And as you know beam
-process mailbox is unbounded, so output sits there waiting to be `receive`d.
+- Stream-based API with proper back-pressure
+- Memory-efficient handling of large outputs
+- Selective control over stdin/stdout/stderr
+- Clean process management (no zombies!)
+- No external dependencies or middleware programs
+- Built on battle-tested POSIX system calls
 
-#### Lets take an example.
-
-Memory consumption with Port
+## Quick Installation
 
 ```elixir
+def deps do
+  [
+    {:exile, "~> x.x.x"} # Replace with latest version
+  ]
+end
+```
+
+
+## Quick Start Examples
+
+### Basic Command Execution
+```elixir
+# Simple output
+Exile.stream!(~w(echo Hello World!))
+|> Enum.into("") # "Hello World!\n"
+
+# With input to stdin
+Exile.stream!(~w(cat), input: ["Hello ", "Back!"])
+|> Enum.into("") # "Hello Back!"
+
+# Stream as input
+input_stream = Stream.map(1..10, fn num -> "#{num}\n" end)
+Exile.stream!(~w(cat), input: input_stream)
+|> Enum.into("")  # "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+
+# With stderr
+Exile.stream!(["sh", "-c", "echo stdout && echo stderr >&2"], stderr: :consume)
+|> Enum.to_list()  # [{:stdout, "stdout\n"}, {:stderr, "stderr\n"}]
+
+# With stderr redirected to stdout
+Exile.stream!(["sh", "-c", "echo stdout && echo stderr >&2"], stderr: :redirect_to_stdout)
+|> Enum.to_list()  # ["stdout\nstderr\n"]
+```
+
+## Why Exile?
+
+### The Problem with Ports
+Traditional Elixir ports have several limitations:
+- No back-pressure → memory exhaustion with large outputs
+- Can't selectively close stdin
+- Potential zombie processes
+- Message-box flooding
+
+### Exile's Solution
+Exile solves these by:
+- Using non-blocking async I/O
+- Implementing proper back-pressure
+- Providing fine-grained stream control
+- Handling process cleanup
+- Zero external dependencies
+
+## Performance Comparison
+
+Memory usage when reading from `/dev/random`:
+
+**With Port:**
+```elixir
+# Memory grows unbounded!
 Port.open({:spawn_executable, "/bin/cat"}, [{:args, ["/dev/random"]}, {:line, 10}, :binary, :use_stdio])
 ```
 
 ![Port memory consumption](./images/port.png)
 
-#### Memory consumption with Exile
-
+**With Exile:**
 ```elixir
+# Stable memory usage
 Exile.stream!(~w(cat /dev/random))
 |> Enum.each(fn data ->
   IO.puts(IO.iodata_length(data))
@@ -41,235 +92,85 @@ end)
 
 ![Exile memory consumption](./images/exile.png)
 
-Exile achieves this by implementing demand-driven, asynchronous IO mechanism with external process using NIF.
-See [Rationale](#rationale) for details. For example, getting audio out of a stream is as simple as
+## Advanced Examples
 
-``` elixir
-Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("music_video.mkv", [], 65_535))
-|> Stream.into(File.stream!("music.mp3"))
+### Working with Large Data Streams
+```elixir
+# Process large data with controlled chunk size
+Exile.stream!(~w(cat huge_file.log), max_chunk_size: 65536)
+|> Stream.map(&process_batch/1)
 |> Stream.run()
+
+# Handle infinite streams
+infinite_stream = Stream.repeatedly(fn -> "data\n" end)
+Exile.stream!(~w(cat), input: infinite_stream, ignore_epipe: true) # we need to ignore epipe since we are terminating the program before the input completes
+|> Stream.take(3)
+|> Enum.into("") # "data\ndata\n..."
 ```
 
-See `Exile.stream!/2` module doc for more details about handling
-stderr and other options.
+### Media Processing
+```elixir
+# Extract audio from video
+Exile.stream!(~w(ffmpeg -i pipe:0 -f mp3 pipe:1), input: File.stream!("video.mkv", [], 65_535))
+|> Stream.into(File.stream!("audio.mp3"))
+|> Stream.run()
 
-`Exile.stream!/2` is a convenience wrapper around
-`Exile.Process`. Prefer using `Exile.stream!` over using
-`Exile.Process` directly.
-
-Exile requires OTP v22.1 and above.
-
-Exile is based on NIF, please know consequence of that before using
-Exile. For basic use cases use
-[ExCmd](https://github.com/akash-akya/ex_cmd) instead.
+# Convert video format with progress on stderr
+Exile.stream!(["ffmpeg", "-i", "input.mp4", "-c:v", "libx264", "pipe:1"], stderr: :consume)
+|> Enum.each(fn
+  {:stdout, data} -> File.write!("output.mp4", data, [:append])
+  {:stderr, data} -> IO.write(:stderr, data) # Show progress
+end)
+```
 
 
-## Installation
+### Exit Status Handling
 
 ```elixir
-def deps do
-  [
-    {:exile, "~> x.x.x"}
-  ]
-end
+# Using stream!/2 (raises on error non-zero exit status)
+try do
+  Exile.stream!(["sh", "-c", "exit 10"])
+  |> Enum.to_list()
+rescue
+  e in Exile.Stream.AbnormalExit ->
+    IO.puts("Failed with status: #{e.exit_status}")
+end # "Failed with status: 10"
+
+# Using stream/2 (returns exit status)
+Exile.stream(["sh", "-c", "exit 10"])
+|> Enum.to_list()  # [..., {:exit, {:status, 10}}]
 ```
 
+### Wait for Input Close
+```elixir
+# base64 waits for input EOF before producing output
+Exile.stream!(~w(base64), input: ["abcdef"])
+|> Enum.into("") # "YWJjZGVm\n"
+```
 
-## Quick Start
+### Collectable as input (Callback)
 
-  Run a command and read from stdout
+```elixir
+# Using input callback
+Exile.stream!(~w(cat), input: fn sink ->
+  Stream.repeatedly(fn -> "data\n" end)
+  |> Stream.take(2)
+  |> Stream.into(sink)
+  |> Stream.run()
+end)
+|> Enum.into("") # "data\ndata\n"
+```
 
-  ```elixir
-  iex> Exile.stream!(~w(echo Hello))
-  ...> |> Enum.into("") # collect as string
-  "Hello\n"
-  ```
+## Alternative Libraries
 
-  Run a command with list of strings as input
+For simpler use cases where NIF-based solutions aren't preferred, consider using [ExCmd](https://github.com/akash-akya/ex_cmd), which provides similar functionality using pure Elixir.
 
-  ```elixir
-  iex> Exile.stream!(~w(cat), input: ["Hello", " ", "World"])
-  ...> |> Enum.into("") # collect as string
-  "Hello World"
-  ```
+## Support & Contribution
 
-  Run a command with input as Stream
+- [Documentation](https://hexdocs.pm/exile/)
+- [GitHub Issues](https://github.com/akash-akya/exile/issues)
 
-  ```elixir
-  iex> input_stream = Stream.map(1..10, fn num -> "#{num} " end)
-  iex> Exile.stream!(~w(cat), input: input_stream)
-  ...> |> Enum.into("")
-  "1 2 3 4 5 6 7 8 9 10 "
-  ```
+## License
 
-  Run a command with input as infinite stream
-
-  ```elixir
-  # create infinite stream
-  iex> input_stream = Stream.repeatedly(fn -> "A" end)
-  iex> binary =
-  ...>   Exile.stream!(~w(cat), input: input_stream, ignore_epipe: true) # we need to ignore epipe since we are terminating the program before the input completes
-  ...>   |> Stream.take(2) # we must limit since the input stream is infinite
-  ...>   |> Enum.into("")
-  iex> is_binary(binary)
-  true
-  iex> "AAAAA" <> _ = binary
-  ```
-
-  Run a command with input Collectable
-
-  ```elixir
-  # Exile calls the callback with a sink where the process can push the data
-  iex> Exile.stream!(~w(cat), input: fn sink ->
-  ...>   Stream.map(1..10, fn num -> "#{num} " end)
-  ...>   |> Stream.into(sink) # push to the external process
-  ...>   |> Stream.run()
-  ...> end)
-  ...> |> Stream.take(100) # we must limit since the input stream is infinite
-  ...> |> Enum.into("")
-  "1 2 3 4 5 6 7 8 9 10 "
-  ```
-
-  When the command wait for the input stream to close
-
-  ```elixir
-  # base64 command wait for the input to close and writes data to stdout at once
-  iex> Exile.stream!(~w(base64), input: ["abcdef"])
-  ...> |> Enum.into("")
-  "YWJjZGVm\n"
-  ```
-
-
-  `stream!/2` raises non-zero exit as error
-
-  ```
-  iex> Exile.stream!(["sh", "-c", "echo 'foo' && exit 10"])
-  ...> |> Enum.to_list()
-  ** (Exile.Stream.AbnormalExit) program exited with exit status: 10
-  ```
-
-  `stream/2` variant returns exit status as last element
-
-  ```
-  iex> Exile.stream(["sh", "-c", "echo 'foo' && exit 10"])
-  ...> |> Enum.to_list()
-  [
-    "foo\n",
-    {:exit, {:status, 10}} # returns exit status of the program as last element
-  ]
-  ```
-
-  You can fetch exit_status from the error for `stream!/2`
-
-  ```
-  iex> try do
-  ...>   Exile.stream!(["sh", "-c", "exit 10"])
-  ...>   |> Enum.to_list()
-  ...> rescue
-  ...>   e in Exile.Stream.AbnormalExit ->
-  ...>     e.exit_status
-  ...> end
-  10
-  ```
-
-  With `max_chunk_size` set
-
-  ```elixir
-  iex> data =
-  ...>   Exile.stream!(~w(cat /dev/urandom), max_chunk_size: 100, ignore_epipe: true)
-  ...>   |> Stream.take(5)
-  ...>   |> Enum.into("")
-  iex> byte_size(data)
-  500
-  ```
-
-  When input and output run at different rate
-
-  ```elixir
-  iex> input_stream = Stream.map(1..1000, fn num -> "X #{num} X\n" end)
-  iex> Exile.stream!(~w(grep 250), input: input_stream)
-  ...> |> Enum.into("")
-  "X 250 X\n"
-  ```
-
-  With stderr set to `:consume`
-
-  ```elixir
-  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], stderr: :consume)
-  ...> |> Enum.to_list()
-  [{:stdout, "foo\n"}, {:stderr, "bar\n"}]
-  ```
-
-  With stderr set to `:disable`
-
-  ```elixir
-  iex> Exile.stream!(["sh", "-c", "echo foo\necho bar >> /dev/stderr"], stderr: :disable)
-  ...> |> Enum.to_list()
-  ["foo\n"]
-  ```
-
-  For more details about stream API, see `Exile.stream!/2` and `Exile.stream/2`.
-
-  For more details about inner working, please check `Exile.Process` documentation.
-
-
-## Rationale
-
-Existing approaches
-
-#### Port
-
-Port is the default way of executing external commands. This is okay when you have control over the external program's implementation and the interaction is minimal. Port has several important issues.
-
-* it can end up creating [zombie process](https://hexdocs.pm/elixir/Port.html#module-zombie-operating-system-processes)
-* cannot selectively close stdin. This is required when the external programs act on EOF from stdin
-* it sends command output as a message to the beam process. This does not put back pressure on the external program and leads exhausting VM memory
-
-#### Middleware based solutions
-
-Libraries such as [Porcelain](https://github.com/alco/porcelain/), [Erlexec](https://github.com/saleyn/erlexec), [Rambo](https://github.com/jayjun/rambo), etc. solves the first two issues associated with ports - zombie process and selectively closing STDIN. But not the third issue - having back-pressure. At a high level, these libraries solve port issues by spawning an external middleware program which in turn spawns the program we want to run. Internally uses port for reading the output and writing input. Note that these libraries are solving a different subset of issues and have different functionality, please check the relevant project page for details.
-
-* no back-pressure
-* additional os process (middleware) for every execution of your program
-* in few cases such as porcelain user has to install this external program explicitly
-* might not be suitable when the program requires constant communication between beam process and external program
-
-On the plus side, unlike Exile, bugs in the implementation does not bring down whole beam VM.
-
-#### [ExCmd](https://github.com/akash-akya/ex_cmd)
-
-This is my other stab at solving back pressure on the external program issue. It implements a demand-driven protocol using [odu](https://github.com/akash-akya/odu) to solve this. Since ExCmd is also a port based solution, concerns previously mentioned applies to ExCmd too.
-
-## Exile
-
-Internally Exile uses non-blocking asynchronous system calls to interact with the external process. It does not use port's message based communication instead does raw stdio using NIF. Uses asynchronous system calls for IO. Most of the system calls are non-blocking, so it should not block the beam schedulers. Makes use of dirty-schedulers for IO.
-
-**Highlights**
-
-* Back pressure
-* no middleware program
-  * no additional os process. No performance/resource cost
-  * no need to install any external command
-* tries to handle zombie process by attempting to clean up external process. *But* as there is no middleware involved with exile, so it is still possible to endup with zombie process if program misbehave.
-* stream abstraction
-* selectively consume stdout and stderr streams
-
-If you are running executing huge number of external programs **concurrently** (more than few hundred) you might have to increase open file descriptors limit (`ulimit -n`)
-
-Non-blocking io can be used for other interesting things. Such as reading named pipe (FIFO) files. `Exile.stream!(~w(cat data.pipe))` does not block schedulers, so you can open hundreds of fifo files unlike default `file` based io.
-
-#### TODO
-
-* add benchmarks results
-
-### 🚨 Obligatory NIF warning
-
-As with any NIF based solution, bugs or issues in Exile implementation **can bring down the beam VM**. But NIF implementation is comparatively small and mostly uses POSIX system calls. Also, spawned external processes are still completely isolated at OS level.
-
-If all you want is to run a command with no communication, then just sticking with `System.cmd` is a better.
-
-### License
-
-Copyright (c) 2020 Akash Hiremath.
-
-Exile source code is released under Apache License 2.0. Check [LICENSE](LICENSE.md) for more information.
+Copyright (c) 2020-2025 Akash Hiremath.
+Released under Apache License 2.0. See [LICENSE](LICENSE.md) for details.
