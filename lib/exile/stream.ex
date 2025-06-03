@@ -284,6 +284,9 @@ defmodule Exile.Stream do
       nil ->
         {:ok, 5000}
 
+      :infinity ->
+        {:ok, :infinity}
+
       timeout when is_integer(timeout) and timeout > 0 ->
         {:ok, timeout}
 
