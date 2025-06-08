@@ -71,7 +71,7 @@ defmodule Exile.Process.Exec do
     :filename.join(:code.priv_dir(:exile), "spawner")
   end
 
-  @socket_timeout 2000
+  @socket_timeout 5000
 
   @spec receive_fds(:socket.socket(), State.stderr_mode()) :: {Pipe.fd(), Pipe.fd(), Pipe.fd()}
   defp receive_fds(lsock, stderr_mode) do
