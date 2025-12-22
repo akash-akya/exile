@@ -897,7 +897,7 @@ defmodule Exile.Process do
   end
 
   @spec exec(State.t()) :: State.t()
-  defp exec(state) do
+  defp exec(%State{} = state) do
     %{
       port: port,
       stdin: stdin_fd,
