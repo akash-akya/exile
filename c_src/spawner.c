@@ -1,3 +1,9 @@
+#ifdef __linux__
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#endif
+
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -8,6 +14,16 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <limits.h>
+
+#ifdef __linux__
+#include <dirent.h>
+#include <errno.h>
+#include <sys/syscall.h>
+
+// Some libc configurations require an explicit syscall prototype.
+extern long syscall(long number, ...);
+#endif
 
 // #define DEBUG
 
@@ -87,6 +103,57 @@ static void close_pipes(int pipes[3][2]) {
       close(pipes[i][PIPE_WRITE]);
   }
 }
+
+#ifdef __linux__
+// Option A: close_range(2) via syscall (Linux 5.9+)
+#if defined(SYS_close_range)
+#define EXILE_CLOSE_RANGE_NR SYS_close_range
+#elif defined(__NR_close_range)
+#define EXILE_CLOSE_RANGE_NR __NR_close_range
+#else
+#define EXILE_CLOSE_RANGE_NR -1
+#endif
+
+static int close_nonstd_fds_close_range(void) {
+  if (EXILE_CLOSE_RANGE_NR == -1) {
+    errno = ENOSYS;
+    return -1;
+  }
+
+  // close everything >= 3
+  long ret = syscall(EXILE_CLOSE_RANGE_NR, 3u, (unsigned int)UINT_MAX, 0u);
+  return (ret == 0) ? 0 : -1;
+}
+
+// Option B: iterate /proc/self/fd and close only open fds.
+static int close_nonstd_fds_procfs(void) {
+  DIR *dir = opendir("/proc/self/fd");
+  if (!dir)
+    return -1;
+
+  int dfd = dirfd(dir);
+  struct dirent *de;
+
+  while ((de = readdir(dir)) != NULL) {
+    char *end = NULL;
+    long fd = strtol(de->d_name, &end, 10);
+
+    if (!end || *end != '\0')
+      continue;
+
+    if (fd <= STDERR_FILENO)
+      continue;
+
+    if ((int)fd == dfd)
+      continue;
+
+    (void)close((int)fd);
+  }
+
+  (void)closedir(dir);
+  return 0;
+}
+#endif
 
 static int exec_process(char const *bin, char *const *args, int socket,
                         char const *stderr_str) {
@@ -179,8 +246,20 @@ static int exec_process(char const *bin, char *const *args, int socket,
   }
 
   /* Close all non-standard io fds. Not closing STDERR */
+#ifdef __linux__
+  // Option A: close_range(2) (Linux 5.9+) and fallback to procfs scan.
+  if (close_nonstd_fds_close_range() != 0) {
+    // Option B: close only fds that are actually open.
+    if (close_nonstd_fds_procfs() != 0) {
+      // Last resort: keep historical behavior.
+      for (i = STDERR_FILENO + 1; i < sysconf(_SC_OPEN_MAX); i++)
+        close(i);
+    }
+  }
+#else
   for (i = STDERR_FILENO + 1; i < sysconf(_SC_OPEN_MAX); i++)
     close(i);
+#endif
 
   debug("exec %s", bin);
 
