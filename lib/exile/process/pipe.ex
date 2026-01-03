@@ -64,7 +64,7 @@ defmodule Exile.Process.Pipe do
   end
 
   @spec close(t, pid) :: {:ok, t} | {:error, :pipe_closed_or_invalid_caller}
-  def close(pipe, caller) do
+  def close(%Pipe{} = pipe, caller) do
     if caller != pipe.owner do
       {:error, :pipe_closed_or_invalid_caller}
     else
@@ -77,7 +77,7 @@ defmodule Exile.Process.Pipe do
   end
 
   @spec set_owner(t, pid) :: {:ok, t} | {:error, :closed}
-  def set_owner(pipe, new_owner) do
+  def set_owner(%Pipe{} = pipe, new_owner) do
     if pipe.status == :open do
       ref = Process.monitor(new_owner)
       Process.demonitor(pipe.monitor_ref, [:flush])
