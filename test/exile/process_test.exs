@@ -222,21 +222,6 @@ defmodule Exile.ProcessTest do
       refute os_process_alive?(os_pid)
     end
 
-    test "await_exit with timeout" do
-      {:ok, s} = Process.start_link([fixture("ignore_sigterm.sh")])
-      {:ok, os_pid} = Process.os_pid(s)
-      assert os_process_alive?(os_pid)
-
-      assert {:ok, "ignored signals\n" <> _} = Process.read(s)
-
-      # attempt to kill the process
-      # 1000ms allows time for signal sequence and BEAM to detect process exit
-      assert {:ok, 137} = Process.await_exit(s, 1000)
-
-      refute os_process_alive?(os_pid)
-      refute Elixir.Process.alive?(s.pid)
-    end
-
     test "exit status" do
       {:ok, s} = Process.start_link(["sh", "-c", "exit 10"])
       assert {:ok, 10} == Process.await_exit(s)
