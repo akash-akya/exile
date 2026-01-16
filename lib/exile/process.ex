@@ -739,6 +739,9 @@ defmodule Exile.Process do
     {:reply, signal(state.port, signal), state}
   end
 
+  # Grace period after SIGKILL before declaring timeout (ms)
+  @sigkill_grace_period 500
+
   @impl true
   def handle_info({:run_exit_sequence, exit_seq}, %{status: status, port: port} = state) do
     case exit_seq do
@@ -751,9 +754,16 @@ defmodule Exile.Process do
         # ignored by the OS process
         {:stop, :kill_timeout, state}
 
-      [{signal, timeout} | exit_seq] ->
-        if signal != :no_signal do
-          signal(port, signal)
+      [{:sigkill, timeout} | exit_seq] ->
+        signal(port, :sigkill)
+        # Give BEAM time to detect process exit after SIGKILL
+        grace_timeout = max(timeout, @sigkill_grace_period)
+        Elixir.Process.send_after(self(), {:run_exit_sequence, exit_seq}, grace_timeout)
+        {:noreply, state}
+
+      [{sig, timeout} | exit_seq] ->
+        if sig != :no_signal do
+          signal(port, sig)
         end
 
         Elixir.Process.send_after(self(), {:run_exit_sequence, exit_seq}, timeout)

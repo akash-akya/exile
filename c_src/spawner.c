@@ -40,6 +40,13 @@ static int set_flag(int fd, int flags) {
   return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | flags);
 }
 
+static int set_cloexec(int fd) {
+  int flags = fcntl(fd, F_GETFD);
+  if (flags == -1)
+    return -1;
+  return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
 static int send_io_fds(int socket, int stdin_fd, int stdout_fd, int stderr_fd) {
   struct msghdr msg = {0};
   struct cmsghdr *cmsg;
@@ -92,7 +99,6 @@ static int exec_process(char const *bin, char *const *args, int socket,
                         char const *stderr_str) {
   int pipes[3][2] = {{0, 0}, {0, 0}, {0, 0}};
   int r_cmdin, w_cmdin, r_cmdout, w_cmdout, r_cmderr, w_cmderr;
-  int i;
 
   if (pipe(pipes[STDIN_FILENO]) == -1 || pipe(pipes[STDOUT_FILENO]) == -1 ||
       pipe(pipes[STDERR_FILENO]) == -1) {
@@ -112,11 +118,19 @@ static int exec_process(char const *bin, char *const *args, int socket,
   r_cmderr = pipes[STDERR_FILENO][PIPE_READ];
   w_cmderr = pipes[STDERR_FILENO][PIPE_WRITE];
 
-  if (set_flag(r_cmdin, O_CLOEXEC) < 0 || set_flag(w_cmdout, O_CLOEXEC) < 0 ||
-      set_flag(w_cmderr, O_CLOEXEC) < 0 ||
-      set_flag(w_cmdin, O_CLOEXEC | O_NONBLOCK) < 0 ||
-      set_flag(r_cmdout, O_CLOEXEC | O_NONBLOCK) < 0 ||
-      set_flag(r_cmderr, O_CLOEXEC | O_NONBLOCK) < 0) {
+  // Set FD_CLOEXEC on all pipe fds to prevent leaking to child process
+  if (set_cloexec(r_cmdin) < 0 || set_cloexec(w_cmdin) < 0 ||
+      set_cloexec(r_cmdout) < 0 || set_cloexec(w_cmdout) < 0 ||
+      set_cloexec(r_cmderr) < 0 || set_cloexec(w_cmderr) < 0) {
+    perror("[spawner] failed to set cloexec for pipes");
+    close_pipes(pipes);
+    return 1;
+  }
+
+  // Set O_NONBLOCK on fds that need non-blocking I/O
+  if (set_flag(w_cmdin, O_NONBLOCK) < 0 ||
+      set_flag(r_cmdout, O_NONBLOCK) < 0 ||
+      set_flag(r_cmderr, O_NONBLOCK) < 0) {
     perror("[spawner] failed to set flags for pipes");
     close_pipes(pipes);
     return 1;
@@ -169,18 +183,16 @@ static int exec_process(char const *bin, char *const *args, int socket,
     close(w_cmderr);
 
     int null_fd = open("/dev/null", O_WRONLY);
-    if (dup2(null_fd, STDERR_FILENO) < 0) {
+    if (null_fd < 0 || dup2(null_fd, STDERR_FILENO) < 0) {
       perror("[spawner] failed to dup to stderr");
       _exit(FORK_EXEC_FAILURE);
     }
+    if (null_fd != STDERR_FILENO)
+      close(null_fd);
   } else {
     close(r_cmderr);
     close(w_cmderr);
   }
-
-  /* Close all non-standard io fds. Not closing STDERR */
-  for (i = STDERR_FILENO + 1; i < sysconf(_SC_OPEN_MAX); i++)
-    close(i);
 
   debug("exec %s", bin);
 
@@ -195,12 +207,24 @@ static int spawn(const char *socket_path, const char *stderr_str,
   int socket_fd;
   struct sockaddr_un socket_addr;
 
+#ifdef SOCK_CLOEXEC
+  socket_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+#else
   socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+#endif
 
   if (socket_fd == -1) {
     debug("Failed to create socket");
     return EXIT_FAILURE;
   }
+
+#ifndef SOCK_CLOEXEC
+  if (set_cloexec(socket_fd) == -1) {
+    debug("Failed to set FD_CLOEXEC on socket");
+    close(socket_fd);
+    return EXIT_FAILURE;
+  }
+#endif
 
   debug("created domain socket");
 
