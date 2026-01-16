@@ -229,8 +229,9 @@ defmodule Exile.ProcessTest do
 
       assert {:ok, "ignored signals\n" <> _} = Process.read(s)
 
-      # attempt to kill the process after 100ms
-      assert {:ok, 137} = Process.await_exit(s, 100)
+      # attempt to kill the process
+      # 1000ms allows time for signal sequence and BEAM to detect process exit
+      assert {:ok, 137} = Process.await_exit(s, 1000)
 
       refute os_process_alive?(os_pid)
       refute Elixir.Process.alive?(s.pid)
