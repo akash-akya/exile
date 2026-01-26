@@ -40,6 +40,10 @@ defmodule Exile.Stream do
                 # raise error, we catch this error and return `{:error, :epipe}`
                 raise Error, "epipe"
 
+              {:error, errno} ->
+                # handle other error codes (e.g., EBADF, etc)
+                raise Error, "write error errno: #{inspect(errno)}"
+
               :ok ->
                 :ok
             end
