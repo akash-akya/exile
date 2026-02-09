@@ -141,6 +141,40 @@ defmodule ExileTest do
              |> Enum.take(1)
   end
 
+  test "premature stream termination surfaces program exit status when no writer epipe is present" do
+    proc_stream =
+      Exile.stream!(["sh", "-c", "trap '' PIPE; while true; do echo hello || exit 3; done"],
+        stderr: :consume
+      )
+
+    assert_raise Exile.Stream.AbnormalExit, "program exited with exit status: 3", fn ->
+      Enum.take(proc_stream, 1)
+    end
+  end
+
+  test "reduce_while can consume stream/2 and return exit payload" do
+    proc_stream = Exile.stream(["sh", "-c", "echo out; echo err >&2; exit 3"], stderr: :consume)
+
+    result =
+      Enum.reduce_while(proc_stream, {[], []}, fn
+        {:stdout, chunk}, {stdout_acc, stderr_acc} ->
+          {:cont, {[stdout_acc | chunk], stderr_acc}}
+
+        {:stderr, chunk}, {stdout_acc, stderr_acc} ->
+          {:cont, {stdout_acc, [stderr_acc | chunk]}}
+
+        {:exit, {:status, exit_status}}, {stdout_acc, stderr_acc} ->
+          {:halt,
+           %{
+             exit_status: exit_status,
+             stdout: String.trim(IO.iodata_to_binary(stdout_acc)),
+             stderr: String.trim(IO.iodata_to_binary(stderr_acc))
+           }}
+      end)
+
+    assert %{exit_status: 3, stdout: "out", stderr: "err"} = result
+  end
+
   test "stream!/2 with exit status" do
     proc_stream = Exile.stream!(["sh", "-c", "exit 10"])
 
