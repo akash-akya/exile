@@ -113,6 +113,64 @@ defmodule ExileTest do
     assert Enum.all?(stderr_lines, &String.starts_with?(&1, "bar "))
   end
 
+  # Stress coverage for intermittent FD lifecycle regressions under high parallel load.
+  # Excluded from default CI via `test_helper.exs` to avoid flaky PR runs.
+  @tag :stress
+  test "many concurrent streams do not fail with fd errors" do
+    total_streams = 160
+    max_concurrency = 40
+
+    failures =
+      1..total_streams
+      |> Task.async_stream(
+        fn _ ->
+          try do
+            stream_output =
+              Exile.stream!(["sh", "-c", "head -c 4096 /dev/zero"],
+                stderr: :consume,
+                max_chunk_size: 512
+              )
+              |> Enum.to_list()
+
+            {stdout_size, stderr_size} =
+              Enum.reduce(stream_output, {0, 0}, fn
+                {:stdout, chunk}, {stdout, stderr} ->
+                  {stdout + IO.iodata_length(chunk), stderr}
+
+                {:stderr, chunk}, {stdout, stderr} ->
+                  {stdout, stderr + IO.iodata_length(chunk)}
+              end)
+
+            if stdout_size == 4096 and stderr_size == 0 do
+              :ok
+            else
+              {:error, {:unexpected_stream_sizes, stdout_size, stderr_size}}
+            end
+          rescue
+            e in Exile.Stream.AbnormalExit ->
+              {:error, {:abnormal_exit, e.exit_status, e.message}}
+
+            e ->
+              {:error, {:exception, Exception.message(e)}}
+          catch
+            kind, reason ->
+              {:error, {:caught, kind, reason}}
+          end
+        end,
+        max_concurrency: max_concurrency,
+        ordered: false,
+        timeout: 15_000
+      )
+      |> Enum.reduce([], fn
+        {:ok, :ok}, acc -> acc
+        {:ok, {:error, reason}}, acc -> [reason | acc]
+        {:exit, reason}, acc -> [{:task_exit, reason} | acc]
+      end)
+      |> Enum.reverse()
+
+    assert failures == []
+  end
+
   test "environment variable" do
     output =
       Exile.stream!(~w(printenv FOO), env: %{"FOO" => "bar"})
@@ -139,6 +197,40 @@ defmodule ExileTest do
     assert ["hello"] ==
              Exile.stream!(~w(cat), input: input_stream, ignore_epipe: true, max_chunk_size: 5)
              |> Enum.take(1)
+  end
+
+  test "premature stream termination surfaces program exit status when no writer epipe is present" do
+    proc_stream =
+      Exile.stream!(["sh", "-c", "trap '' PIPE; while true; do echo hello || exit 3; done"],
+        stderr: :consume
+      )
+
+    assert_raise Exile.Stream.AbnormalExit, "program exited with exit status: 3", fn ->
+      Enum.take(proc_stream, 1)
+    end
+  end
+
+  test "reduce_while can consume stream/2 and return exit payload" do
+    proc_stream = Exile.stream(["sh", "-c", "echo out; echo err >&2; exit 3"], stderr: :consume)
+
+    result =
+      Enum.reduce_while(proc_stream, {[], []}, fn
+        {:stdout, chunk}, {stdout_acc, stderr_acc} ->
+          {:cont, {[stdout_acc | chunk], stderr_acc}}
+
+        {:stderr, chunk}, {stdout_acc, stderr_acc} ->
+          {:cont, {stdout_acc, [stderr_acc | chunk]}}
+
+        {:exit, {:status, exit_status}}, {stdout_acc, stderr_acc} ->
+          {:halt,
+           %{
+             exit_status: exit_status,
+             stdout: String.trim(IO.iodata_to_binary(stdout_acc)),
+             stderr: String.trim(IO.iodata_to_binary(stderr_acc))
+           }}
+      end)
+
+    assert %{exit_status: 3, stdout: "out", stderr: "err"} = result
   end
 
   test "stream!/2 with exit status" do

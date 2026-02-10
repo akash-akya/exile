@@ -2,6 +2,7 @@ defmodule Exile.Process.Pipe do
   @moduledoc false
 
   alias Exile.Process.Nif
+  require Logger
 
   @type name :: Exile.Process.pipe_name()
 
@@ -49,6 +50,7 @@ defmodule Exile.Process.Pipe do
       case Nif.nif_read(pipe.fd, size) do
         # normalize return value
         {:ok, <<>>} -> :eof
+        {:error, :invalid_fd_resource} -> {:error, :pipe_closed_or_invalid_caller}
         ret -> ret
       end
     end
@@ -59,7 +61,10 @@ defmodule Exile.Process.Pipe do
     if caller != pipe.owner do
       {:error, :pipe_closed_or_invalid_caller}
     else
-      Nif.nif_write(pipe.fd, bin)
+      case Nif.nif_write(pipe.fd, bin) do
+        {:error, :invalid_fd_resource} -> {:error, :pipe_closed_or_invalid_caller}
+        ret -> ret
+      end
     end
   end
 
@@ -69,7 +74,8 @@ defmodule Exile.Process.Pipe do
       {:error, :pipe_closed_or_invalid_caller}
     else
       Process.demonitor(pipe.monitor_ref, [:flush])
-      Nif.nif_close(pipe.fd)
+      result = Nif.nif_close(pipe.fd)
+      if result != :ok, do: Logger.debug("Exile: nif_close returned #{inspect(result)}")
       pipe = %Pipe{pipe | status: :closed, monitor_ref: nil, owner: nil}
 
       {:ok, pipe}

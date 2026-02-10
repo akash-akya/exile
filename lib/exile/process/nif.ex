@@ -2,6 +2,8 @@ defmodule Exile.Process.Nif do
   @moduledoc false
   @on_load :load_nifs
 
+  # Internal wrapper around native functions. Access is further constrained in
+  # the NIF layer by per-resource controller pid checks.
   def load_nifs do
     nif_path = :filename.join(:code.priv_dir(:exile), "exile")
     :erlang.load_nif(nif_path, 0)

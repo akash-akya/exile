@@ -33,11 +33,11 @@ defmodule Exile.Process.Exec do
           prune_nils(env: env, cd: cd)
 
       port = Port.open({:spawn_executable, spawner_path()}, port_opts)
-
-      {:os_pid, os_pid} = Port.info(port, :os_pid)
-      Exile.Watcher.watch(self(), os_pid, socket_path)
-
       {stdin_fd, stdout_fd, stderr_fd} = receive_fds(sock, stderr)
+
+      # `Port.open/2` guarantees a port handle, but `Port.info(port, :os_pid)`
+      # can be unavailable if the external process exits very quickly.
+      maybe_watch_process(port, socket_path)
 
       %{port: port, stdin: stdin_fd, stdout: stdout_fd, stderr: stderr_fd}
     after
@@ -126,6 +126,30 @@ defmodule Exile.Process.Exec do
   @spec prune_nils(keyword()) :: keyword()
   defp prune_nils(kv) do
     Enum.reject(kv, fn {_, v} -> is_nil(v) end)
+  end
+
+  @doc false
+  @spec os_pid(port()) :: {:ok, pos_integer()} | :undefined
+  def os_pid(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} when is_integer(os_pid) and os_pid > 0 ->
+        {:ok, os_pid}
+
+      nil ->
+        :undefined
+    end
+  end
+
+  @spec maybe_watch_process(port(), String.t()) :: :ok
+  defp maybe_watch_process(port, socket_path) do
+    case os_pid(port) do
+      {:ok, os_pid} ->
+        _ = Exile.Watcher.watch(self(), os_pid, socket_path)
+        :ok
+
+      :undefined ->
+        :ok
+    end
   end
 
   @spec normalize_cmd(nonempty_list()) :: {:ok, nonempty_list()} | {:error, binary()}

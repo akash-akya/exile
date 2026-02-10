@@ -238,6 +238,12 @@ defmodule Exile.Stream do
         {:running, {:ok, _status}, {:error, :epipe}} when ignore_epipe == false ->
           {:exit, :epipe}
 
+        # Stream cleanup runs even when enumeration halts/raises before EOF.
+        # In that case `exit_state` can still be `:running`, so preserve the
+        # external program's actual status instead of crashing with CaseClauseError.
+        {:running, {:ok, exit_status}, _writer_task_status} ->
+          {:exit, {:status, exit_status}}
+
         # Normal exit success case
         {_, {:ok, 0}, _} ->
           {:exit, {:status, 0}}

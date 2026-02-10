@@ -99,17 +99,23 @@ defmodule Exile.Process.Operations do
           handle_successful_write(state, size, operation)
 
         {:error, :eagain} ->
-          case State.put_operation(state, operation) do
-            {:ok, new_state} ->
-              {:noreply, new_state}
-
-            error ->
-              error
-          end
+          queue_pending_write(state, operation)
 
         ret ->
           ret
       end
+    end
+  end
+
+  @spec queue_pending_write(State.t(), write_operation()) ::
+          {:noreply, State.t()} | {:error, term}
+  defp queue_pending_write(state, operation) do
+    case State.put_operation(state, operation) do
+      {:ok, new_state} ->
+        {:noreply, new_state}
+
+      error ->
+        error
     end
   end
 
@@ -168,6 +174,12 @@ defmodule Exile.Process.Operations do
         case {ret1, Pipe.read(secondary, size, caller)} do
           {:eof, :eof} ->
             :eof
+
+          # If stdout (primary) is not ready yet while stderr (secondary) already
+          # reached EOF, we must keep waiting for stdout. Returning :eof here would
+          # terminate the stream early and drop pending stdout bytes.
+          {{:error, :eagain}, :eof} ->
+            {:error, :eagain}
 
           {_, {:ok, bin}} ->
             {:ok, {secondary.name, bin}}
