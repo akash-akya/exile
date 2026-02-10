@@ -3,6 +3,7 @@ defmodule Exile.Process.NifFdLifecycleTest do
 
   alias Exile.Process.Exec
   alias Exile.Process.Nif
+  alias Exile.Process.Pipe
 
   defp start_cat! do
     {:ok, args} = Exec.normalize_exec_args(~w(cat), stderr: :consume)
@@ -47,5 +48,19 @@ defmodule Exile.Process.NifFdLifecycleTest do
 
     assert {:error, :invalid_fd_resource} = non_owner_result
     assert :ok = Nif.nif_close(handles.stdin)
+  end
+
+  test "pipe read/write map invalid fd resource to pipe_closed_or_invalid_caller" do
+    handles = start_cat!()
+    on_exit(fn -> cleanup_handles(handles) end)
+
+    stdin_pipe = %Pipe{name: :stdin, fd: handles.stdin, owner: self(), status: :open}
+    stdout_pipe = %Pipe{name: :stdout, fd: handles.stdout, owner: self(), status: :open}
+
+    assert :ok = Nif.nif_close(handles.stdin)
+    assert :ok = Nif.nif_close(handles.stdout)
+
+    assert {:error, :pipe_closed_or_invalid_caller} = Pipe.write(stdin_pipe, "x", self())
+    assert {:error, :pipe_closed_or_invalid_caller} = Pipe.read(stdout_pipe, 64, self())
   end
 end
