@@ -113,6 +113,61 @@ defmodule ExileTest do
     assert Enum.all?(stderr_lines, &String.starts_with?(&1, "bar "))
   end
 
+  test "many concurrent streams do not fail with fd errors" do
+    total_streams = 160
+    max_concurrency = 40
+
+    failures =
+      1..total_streams
+      |> Task.async_stream(
+        fn _ ->
+          try do
+            stream_output =
+              Exile.stream!(["sh", "-c", "head -c 4096 /dev/zero"],
+                stderr: :consume,
+                max_chunk_size: 512
+              )
+              |> Enum.to_list()
+
+            {stdout_size, stderr_size} =
+              Enum.reduce(stream_output, {0, 0}, fn
+                {:stdout, chunk}, {stdout, stderr} ->
+                  {stdout + IO.iodata_length(chunk), stderr}
+
+                {:stderr, chunk}, {stdout, stderr} ->
+                  {stdout, stderr + IO.iodata_length(chunk)}
+              end)
+
+            if stdout_size == 4096 and stderr_size == 0 do
+              :ok
+            else
+              {:error, {:unexpected_stream_sizes, stdout_size, stderr_size}}
+            end
+          rescue
+            e in Exile.Stream.AbnormalExit ->
+              {:error, {:abnormal_exit, e.exit_status, e.message}}
+
+            e ->
+              {:error, {:exception, Exception.message(e)}}
+          catch
+            kind, reason ->
+              {:error, {:caught, kind, reason}}
+          end
+        end,
+        max_concurrency: max_concurrency,
+        ordered: false,
+        timeout: 15_000
+      )
+      |> Enum.reduce([], fn
+        {:ok, :ok}, acc -> acc
+        {:ok, {:error, reason}}, acc -> [reason | acc]
+        {:exit, reason}, acc -> [{:task_exit, reason} | acc]
+      end)
+      |> Enum.reverse()
+
+    assert failures == []
+  end
+
   test "environment variable" do
     output =
       Exile.stream!(~w(printenv FOO), env: %{"FOO" => "bar"})
