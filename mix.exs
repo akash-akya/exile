@@ -68,8 +68,8 @@ defmodule Exile.MixProject do
   end
 
   defp copy_images(_) do
-    File.cp_r("./images", "./doc/images/", fn source, destination ->
-      IO.gets("Overwriting #{destination} by #{source}. Type y to confirm. ") == "y\n"
-    end)
+    File.cp_r("./images", "./doc/images/",
+      on_conflict: fn _source, _destination -> true end
+    )
   end
 end
