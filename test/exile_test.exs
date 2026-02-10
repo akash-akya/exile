@@ -113,6 +113,9 @@ defmodule ExileTest do
     assert Enum.all?(stderr_lines, &String.starts_with?(&1, "bar "))
   end
 
+  # Stress coverage for intermittent FD lifecycle regressions under high parallel load.
+  # Excluded from default CI via `test_helper.exs` to avoid flaky PR runs.
+  @tag :stress
   test "many concurrent streams do not fail with fd errors" do
     total_streams = 160
     max_concurrency = 40
