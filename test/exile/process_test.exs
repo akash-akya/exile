@@ -100,6 +100,18 @@ defmodule Exile.ProcessTest do
       assert :eof = Process.read_any(s, 100)
     end
 
+    test "read_any waits for delayed stdout when stderr has already reached eof" do
+      # Regression for a race where read_any could return :eof when stdout was
+      # still pending (EAGAIN) and only stderr had reached EOF.
+      Enum.each(1..30, fn _ ->
+        {:ok, s} = Process.start_link(["sh", "-c", "sleep 0.01; printf foo"], stderr: :consume)
+
+        assert {:ok, {:stdout, "foo"}} = Process.read_any(s, 16)
+        assert :eof = Process.read_any(s, 16)
+        assert {:ok, 0} = Process.await_exit(s, 1000)
+      end)
+    end
+
     test "reading from stderr_read when stderr disabled" do
       {:ok, s} = Process.start_link(["sh", "-c", "echo foo >>/dev/stderr"], stderr: :console)
 

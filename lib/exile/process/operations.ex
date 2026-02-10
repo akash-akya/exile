@@ -169,6 +169,12 @@ defmodule Exile.Process.Operations do
           {:eof, :eof} ->
             :eof
 
+          # If stdout (primary) is not ready yet while stderr (secondary) already
+          # reached EOF, we must keep waiting for stdout. Returning :eof here would
+          # terminate the stream early and drop pending stdout bytes.
+          {{:error, :eagain}, :eof} ->
+            {:error, :eagain}
+
           {_, {:ok, bin}} ->
             {:ok, {secondary.name, bin}}
 
