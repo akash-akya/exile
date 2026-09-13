@@ -67,6 +67,7 @@ defmodule Exile.Stream do
 
   @stream_opts [
     :exit_timeout,
+    :cancel_timeout,
     :max_chunk_size,
     :input,
     :stderr,
@@ -93,66 +94,16 @@ defmodule Exile.Stream do
   end
 
   defimpl Enumerable do
-    # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+    # Logger used :warn before Elixir 1.11.
+    if macro_exported?(Logger, :warning, 2) do
+      @warning_level :warning
+    else
+      @warning_level :warn
+    end
+
     def reduce(arg, acc, fun) do
-      start_fun = fn ->
-        state = start_process(arg)
-        {state, :running}
-      end
-
-      next_fun = fn
-        {state, :exited} ->
-          {:halt, {state, :exited}}
-
-        {state, exit_state} ->
-          %{
-            process: process,
-            stream_opts: %{
-              stderr: stderr,
-              stream_exit_status: stream_exit_status,
-              max_chunk_size: max_chunk_size
-            }
-          } = state
-
-          case Process.read_any(process, max_chunk_size) do
-            :eof when stream_exit_status == false ->
-              {:halt, {state, :eof}}
-
-            :eof when stream_exit_status == true ->
-              elem = [await_exit(state, :eof)]
-              {elem, {state, :exited}}
-
-            {:ok, {:stdout, x}} when stderr != :consume ->
-              elem = [IO.iodata_to_binary(x)]
-              {elem, {state, exit_state}}
-
-            {:ok, {io_stream, x}} when stderr == :consume ->
-              elem = [{io_stream, IO.iodata_to_binary(x)}]
-              {elem, {state, exit_state}}
-
-            {:error, errno} ->
-              raise Error, "failed to read from the external process. errno: #{inspect(errno)}"
-          end
-      end
-
-      after_fun = fn
-        {_state, :exited} ->
-          :ok
-
-        {state, exit_state} ->
-          case await_exit(state, exit_state) do
-            {:exit, {:status, 0}} ->
-              :ok
-
-            {:exit, {:status, exit_status}} ->
-              raise AbnormalExit, exit_status
-
-            {:exit, :epipe} ->
-              raise AbnormalExit, :epipe
-          end
-      end
-
-      Stream.resource(start_fun, next_fun, after_fun).(acc, fun)
+      state = start_process(arg)
+      reduce_stream(state, acc, fun)
     end
 
     def count(_stream) do
@@ -167,89 +118,206 @@ defmodule Exile.Stream do
       {:error, __MODULE__}
     end
 
-    defp start_process(%Exile.Stream{
-           process_opts: process_opts,
-           stream_opts: stream_opts,
-           cmd_with_args: cmd_with_args
-         }) do
-      process_opts = Keyword.put(process_opts, :stderr, stream_opts[:stderr])
-      {:ok, process} = Process.start_link(cmd_with_args, process_opts)
+    defp reduce_stream(state, step, fun) do
+      case step do
+        {:suspend, acc} ->
+          {:suspended, acc, &reduce_stream(state, &1, fun)}
+
+        {_operation, acc} when state == :exited ->
+          {:halted, acc}
+
+        {:halt, acc} ->
+          exit_result = await_exit(state, :halt)
+          check_exit_status(exit_result)
+          {:halted, acc}
+
+        {:cont, acc} ->
+          continue_stream(state, acc, fun)
+      end
+    end
+
+    defp continue_stream(state, acc, fun) do
+      next_step =
+        try do
+          case read_next(state) do
+            :eof -> :eof
+            {:ok, element} -> fun.(element, acc)
+          end
+        catch
+          kind, reason ->
+            stacktrace = __STACKTRACE__
+            cleanup_safely(fn -> await_exit(state, :cleanup) end)
+            :erlang.raise(kind, reason, stacktrace)
+        end
+
+      case next_step do
+        :eof ->
+          exit_result = await_exit(state, :eof)
+
+          if state.stream_opts.stream_exit_status do
+            next_acc = fun.(exit_result, acc)
+            reduce_stream(:exited, next_acc, fun)
+          else
+            check_exit_status(exit_result)
+            {:halted, acc}
+          end
+
+        _ ->
+          reduce_stream(state, next_step, fun)
+      end
+    end
+
+    defp read_next(state) do
+      %{process: process, stream_opts: stream_opts} = state
+
+      case Process.read_any(process, stream_opts.max_chunk_size) do
+        :eof ->
+          :eof
+
+        {:ok, {io_stream, data}} when stream_opts.stderr == :consume ->
+          {:ok, {io_stream, IO.iodata_to_binary(data)}}
+
+        {:ok, {:stdout, data}} ->
+          {:ok, IO.iodata_to_binary(data)}
+
+        {:error, {:input, {kind, reason, stacktrace}}} ->
+          :erlang.raise(kind, reason, stacktrace)
+
+        {:error, errno} ->
+          raise Error, "failed to read from the external process. errno: #{inspect(errno)}"
+      end
+    end
+
+    defp cleanup_safely(fun) do
+      fun.()
+    catch
+      kind, reason ->
+        Logger.log(
+          @warning_level,
+          "Exile stream cleanup failed: " <> Exception.format(kind, reason, __STACKTRACE__)
+        )
+    end
+
+    defp check_exit_status(result) do
+      case result do
+        {:exit, {:status, 0}} -> :ok
+        {:exit, {:status, exit_status}} -> raise AbnormalExit, exit_status
+        {:exit, :epipe} -> raise AbnormalExit, :epipe
+      end
+    end
+
+    defp start_process(stream) do
+      stream_opts = stream.stream_opts
+      process_opts = Keyword.put(stream.process_opts, :stderr, stream_opts[:stderr])
+      {:ok, process} = Process.start_link(stream.cmd_with_args, process_opts)
       sink = %Sink{process: process, ignore_epipe: stream_opts[:ignore_epipe]}
-      writer_task = start_input_streamer(sink, stream_opts.input)
+
+      writer_task =
+        Task.async(fn -> stream_input(sink, stream_opts.input, stream_opts.cancel_timeout) end)
 
       %{process: process, stream_opts: stream_opts, writer_task: writer_task}
     end
 
-    @doc false
-    @spec start_input_streamer(term, term) :: Task.t()
-    defp start_input_streamer(%Sink{process: process} = sink, input) do
-      case input do
-        :no_input ->
-          # use `Task.completed(:ok)` when bumping min Elixir requirement
-          Task.async(fn -> :ok end)
+    defp stream_input(sink, input, cancel_timeout) do
+      process = sink.process
 
-        {:enumerable, enum} ->
-          Task.async(fn ->
+      result =
+        case input do
+          :no_input ->
+            :ok
+
+          {:enumerable, enum} ->
             Process.change_pipe_owner(process, :stdin, self())
+            Enum.into(enum, sink)
 
-            try do
-              Enum.into(enum, sink)
-            rescue
-              Error ->
-                {:error, :epipe}
-            end
-          end)
-
-        {:collectable, func} ->
-          Task.async(fn ->
+          {:collectable, func} ->
             Process.change_pipe_owner(process, :stdin, self())
+            func.(sink)
+        end
 
-            try do
-              func.(sink)
-            rescue
-              Error ->
-                {:error, :epipe}
-            end
-          end)
+      {:ok, result}
+    catch
+      :error, %Error{message: "epipe"} ->
+        {:error, :epipe}
+
+      kind, reason ->
+        stacktrace = __STACKTRACE__
+        Process.input_failed(sink.process, {kind, reason, stacktrace}, cancel_timeout)
+        {:input_error, kind, reason, stacktrace}
+    end
+
+    defp input_result(result, exit_state) do
+      case result do
+        {:ok, value} ->
+          value
+
+        {:input_error, _kind, _reason, _stacktrace} when exit_state == :cleanup ->
+          # Preserve the original failure during cleanup.
+          :cancelled
+
+        {:input_error, kind, reason, stacktrace} ->
+          :erlang.raise(kind, reason, stacktrace)
+
+        _ ->
+          result
       end
     end
 
     defp await_exit(state, exit_state) do
-      %{
-        process: process,
-        stream_opts: %{ignore_epipe: ignore_epipe, exit_timeout: exit_timeout},
-        writer_task: writer_task
-      } = state
+      %{process: process, stream_opts: opts, writer_task: writer_task} = state
 
-      result = Process.await_exit(process, exit_timeout)
-      writer_task_status = Task.await(writer_task)
+      try do
+        case exit_state do
+          :eof ->
+            {:ok, exit_status} = Process.await_exit(process, opts.exit_timeout)
+            writer_result = Task.await(writer_task)
+            input_result(writer_result, :eof)
+            {:exit, {:status, exit_status}}
 
-      case {exit_state, result, writer_task_status} do
-        # if reader exit early and there is a pending write
-        {:running, {:ok, _status}, {:error, :epipe}} when ignore_epipe ->
+          exit_state when exit_state in [:halt, :cleanup] ->
+            cancel_stream(state, exit_state)
+        end
+      catch
+        kind, reason ->
+          stacktrace = __STACKTRACE__
+          cleanup_safely(fn -> Task.shutdown(writer_task, :brutal_kill) end)
+          # Let the existing watcher reap the command if awaiting it failed.
+          Elixir.Process.unlink(process.pid)
+          Elixir.Process.exit(process.pid, :kill)
+          Elixir.Process.demonitor(process.monitor_ref, [:flush])
+          :erlang.raise(kind, reason, stacktrace)
+      end
+    end
+
+    defp cancel_stream(state, exit_state) do
+      %{process: process, stream_opts: opts, writer_task: writer_task} = state
+      {:ok, exit_status} = Process.await_exit(process, opts.cancel_timeout)
+      writer_result = await_writer(writer_task, opts.cancel_timeout)
+      writer_status = input_result(writer_result, exit_state)
+
+      case {writer_status, opts.ignore_epipe} do
+        {status, true} when status in [:ok, :cancelled, {:error, :epipe}] ->
           {:exit, {:status, 0}}
 
-        # if reader exit early and there is no pending write or if
-        # there is no writer
-        {:running, {:ok, _status}, :ok} when ignore_epipe ->
-          {:exit, {:status, 0}}
-
-        # if we get epipe from writer then raise that error, and ignore exit status
-        {:running, {:ok, _status}, {:error, :epipe}} when ignore_epipe == false ->
+        {{:error, :epipe}, false} ->
           {:exit, :epipe}
 
-        # Stream cleanup runs even when enumeration halts/raises before EOF.
-        # In that case `exit_state` can still be `:running`, so preserve the
-        # external program's actual status instead of crashing with CaseClauseError.
-        {:running, {:ok, exit_status}, _writer_task_status} ->
+        _ ->
           {:exit, {:status, exit_status}}
+      end
+    end
 
-        # Normal exit success case
-        {_, {:ok, 0}, _} ->
-          {:exit, {:status, 0}}
+    defp await_writer(writer_task, timeout) do
+      result =
+        case Task.yield(writer_task, timeout) do
+          nil -> Task.shutdown(writer_task, :brutal_kill)
+          reply -> reply
+        end
 
-        {:eof, {:ok, exit_status}, _} ->
-          {:exit, {:status, exit_status}}
+      case result do
+        {:ok, status} -> status
+        nil -> :cancelled
+        {:exit, reason} -> exit({reason, {Task, :await, [writer_task, timeout]}})
       end
     end
   end
@@ -285,10 +353,10 @@ defmodule Exile.Stream do
     end
   end
 
-  defp normalize_exit_timeout(timeout) do
+  defp normalize_timeout(timeout, default, option) do
     case timeout do
       nil ->
-        {:ok, 5000}
+        {:ok, default}
 
       :infinity ->
         {:ok, :infinity}
@@ -297,7 +365,7 @@ defmodule Exile.Stream do
         {:ok, timeout}
 
       _ ->
-        {:error, ":exit_timeout must be either :infinity or an integer"}
+        {:error, ":#{option} must be either :infinity or an integer"}
     end
   end
 
@@ -343,7 +411,8 @@ defmodule Exile.Stream do
 
   defp normalize_stream_opts(opts) do
     with {:ok, input} <- normalize_input(opts[:input]),
-         {:ok, exit_timeout} <- normalize_exit_timeout(opts[:exit_timeout]),
+         {:ok, exit_timeout} <- normalize_timeout(opts[:exit_timeout], 5000, :exit_timeout),
+         {:ok, cancel_timeout} <- normalize_timeout(opts[:cancel_timeout], 1000, :cancel_timeout),
          {:ok, max_chunk_size} <- normalize_max_chunk_size(opts[:max_chunk_size]),
          {:ok, stderr} <- normalize_stderr(opts[:stderr]),
          {:ok, ignore_epipe} <- normalize_ignore_epipe(opts[:ignore_epipe]),
@@ -352,6 +421,7 @@ defmodule Exile.Stream do
        %{
          input: input,
          exit_timeout: exit_timeout,
+         cancel_timeout: cancel_timeout,
          max_chunk_size: max_chunk_size,
          stderr: stderr,
          ignore_epipe: ignore_epipe,

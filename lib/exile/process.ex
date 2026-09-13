@@ -499,6 +499,12 @@ defmodule Exile.Process do
     GenServer.call(process.pid, {:read_stdout_or_stderr, size}, :infinity)
   end
 
+  @doc false
+  @spec input_failed(t, {atom(), term(), list()}, timeout()) :: :ok
+  def input_failed(process, failure, timeout) do
+    GenServer.cast(process.pid, {:input_failed, failure, timeout})
+  end
+
   @doc """
   Changes the Pipe owner of the pipe to specified pid.
 
@@ -564,16 +570,7 @@ defmodule Exile.Process do
             "task #{inspect(process)} exit status can only be queried by owner but was queried from #{inspect(self())}"
     end
 
-    graceful_exit_timeout =
-      if timeout == :infinity do
-        :infinity
-      else
-        # process exit steps should finish before receive timeout exceeds
-        # receive timeout is max allowed time for the `await_exit` call to block
-        max(0, timeout - 100)
-      end
-
-    :ok = GenServer.cast(pid, {:prepare_exit, owner, graceful_exit_timeout})
+    :ok = GenServer.cast(pid, {:prepare_exit, owner, graceful_exit_timeout(timeout)})
 
     receive do
       {^exit_ref, exit_status} ->
@@ -632,30 +629,32 @@ defmodule Exile.Process do
   @exit_seq [:no_signal, :sigterm, :sigterm, :sigkill]
 
   @impl true
-  def handle_cast({:prepare_exit, caller, timeout}, state) do
-    state =
-      Enum.reduce(state.pipes, state, fn {_pipe_name, pipe}, state ->
-        case Pipe.close(pipe, caller) do
-          {:ok, pipe} ->
-            {:ok, state} = State.put_pipe(state, pipe.name, pipe)
-            state
+  def handle_cast(message, state) do
+    case message do
+      {:input_failed, failure, timeout} ->
+        state = %{state | input_error: failure}
 
-          {:error, _} ->
-            state
-        end
-      end)
+        state =
+          case State.pop_operation(state, :read_stdout_or_stderr) do
+            {:ok, {_operation, from, _size}, state} ->
+              GenServer.reply(from, {:error, {:input, failure}})
+              state
 
-    case maybe_shutdown(state) do
-      {:stop, :normal, state} ->
-        {:stop, :normal, state}
+            {:error, :operation_not_found} ->
+              state
+          end
 
-      {:noreply, state} ->
-        if timeout == :infinity do
-          {:noreply, state}
-        else
-          step_timeout = div(timeout, length(@exit_seq))
-          exit_seq = Enum.map(@exit_seq, &{&1, step_timeout})
-          handle_info({:run_exit_sequence, exit_seq}, state)
+        start_exit_sequence(state, graceful_exit_timeout(timeout))
+
+      {:prepare_exit, caller, timeout} ->
+        state = close_owned_pipes(state, caller)
+
+        case maybe_shutdown(state) do
+          {:stop, :normal, state} ->
+            {:stop, :normal, state}
+
+          {:noreply, state} ->
+            start_exit_sequence(state, timeout)
         end
     end
   end
@@ -705,12 +704,18 @@ defmodule Exile.Process do
   end
 
   def handle_call({:read_stdout_or_stderr, size}, from, state) do
-    case Operations.read_any(state, {:read_stdout_or_stderr, from, size}) do
-      {:noreply, state} ->
-        {:noreply, state}
+    case state.input_error do
+      nil ->
+        case Operations.read_any(state, {:read_stdout_or_stderr, from, size}) do
+          {:noreply, state} ->
+            {:noreply, state}
 
-      ret ->
-        {:reply, ret, state}
+          ret ->
+            {:reply, ret, state}
+        end
+
+      failure ->
+        {:reply, {:error, {:input, failure}}, state}
     end
   end
 
@@ -743,10 +748,12 @@ defmodule Exile.Process do
   @sigkill_grace_period 500
 
   @impl true
-  def handle_info({:run_exit_sequence, exit_seq}, %{status: status, port: port} = state) do
+  def handle_info({:run_exit_sequence, deadline, exit_seq}, state) do
+    port = state.port
+
     case exit_seq do
-      _ when status != :running ->
-        # we are done if port is not running
+      _ when deadline != state.exit_deadline or state.status != :running ->
+        # Ignore superseded timers and commands that have already exited.
         {:noreply, state}
 
       [] ->
@@ -758,7 +765,7 @@ defmodule Exile.Process do
         signal(port, :sigkill)
         # Give BEAM time to detect process exit after SIGKILL
         grace_timeout = max(timeout, @sigkill_grace_period)
-        Elixir.Process.send_after(self(), {:run_exit_sequence, exit_seq}, grace_timeout)
+        Elixir.Process.send_after(self(), {:run_exit_sequence, deadline, exit_seq}, grace_timeout)
         {:noreply, state}
 
       [{sig, timeout} | exit_seq] ->
@@ -766,7 +773,7 @@ defmodule Exile.Process do
           signal(port, sig)
         end
 
-        Elixir.Process.send_after(self(), {:run_exit_sequence, exit_seq}, timeout)
+        Elixir.Process.send_after(self(), {:run_exit_sequence, deadline, exit_seq}, timeout)
         {:noreply, state}
     end
   end
@@ -861,19 +868,53 @@ defmodule Exile.Process do
   end
 
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    state =
-      Enum.reduce(state.pipes, state, fn {_pipe_name, pipe}, state ->
-        case Pipe.close(pipe, pid) do
-          {:ok, pipe} ->
-            {:ok, state} = State.put_pipe(state, pipe.name, pipe)
-            state
-
-          {:error, _} ->
-            state
-        end
-      end)
-
+    state = close_owned_pipes(state, pid)
     maybe_shutdown(state)
+  end
+
+  defp close_owned_pipes(state, owner) do
+    Enum.reduce(state.pipes, state, fn entry, state ->
+      {_pipe_name, pipe} = entry
+
+      case Pipe.close(pipe, owner) do
+        {:ok, pipe} ->
+          {:ok, state} = State.put_pipe(state, pipe.name, pipe)
+          state
+
+        {:error, _} ->
+          state
+      end
+    end)
+  end
+
+  defp graceful_exit_timeout(timeout) do
+    case timeout do
+      :infinity ->
+        :infinity
+
+      timeout ->
+        # Leave time to deliver the exit status before await_exit times out.
+        max(0, timeout - 100)
+    end
+  end
+
+  defp start_exit_sequence(state, timeout) do
+    case timeout do
+      :infinity ->
+        {:noreply, state}
+
+      timeout ->
+        deadline = System.monotonic_time(:millisecond) + timeout
+
+        if state.exit_deadline != nil and state.exit_deadline <= deadline do
+          {:noreply, state}
+        else
+          state = %{state | exit_deadline: deadline}
+          step_timeout = div(timeout, length(@exit_seq))
+          exit_seq = Enum.map(@exit_seq, &{&1, step_timeout})
+          handle_info({:run_exit_sequence, deadline, exit_seq}, state)
+        end
+    end
   end
 
   @type signal :: :sigkill | :sigterm
