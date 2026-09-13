@@ -1,6 +1,8 @@
 defmodule ExileTest do
   use ExUnit.Case
 
+  alias Exile.Process.Nif
+
   @write_stderr Path.join(__DIR__, "scripts/write_stderr.sh")
 
   doctest Exile
@@ -200,14 +202,108 @@ defmodule ExileTest do
   end
 
   test "premature stream termination surfaces program exit status when no writer epipe is present" do
-    proc_stream =
-      Exile.stream!(["sh", "-c", "trap '' PIPE; while true; do echo hello || exit 3; done"],
-        stderr: :consume
-      )
+    for stream_fun <- [&Exile.stream/2, &Exile.stream!/2] do
+      proc_stream =
+        stream_fun.(["sh", "-c", "trap '' PIPE; while true; do echo hello || exit 3; done"],
+          stderr: :consume
+        )
 
-    assert_raise Exile.Stream.AbnormalExit, "program exited with exit status: 3", fn ->
-      Enum.take(proc_stream, 1)
+      assert_raise Exile.Stream.AbnormalExit, "program exited with exit status: 3", fn ->
+        Enum.take(proc_stream, 1)
+      end
     end
+  end
+
+  test "normal EOF waits for completion independently of the cancellation timeout" do
+    for {stream_fun, expected} <- [
+          {&Exile.stream/2, [{:exit, {:status, 0}}]},
+          {&Exile.stream!/2, []}
+        ] do
+      output =
+        stream_fun.(
+          ["sh", "-c", "read ready; exec 1>&- 2>&-; read done; test \"$done\" = done"],
+          input: fn sink ->
+            :ok = Enum.into(["ready\n"], sink)
+            Process.sleep(200)
+            Enum.into(["done\n"], sink)
+          end,
+          stderr: :consume,
+          exit_timeout: :infinity,
+          cancel_timeout: 100
+        )
+        |> Enum.to_list()
+
+      assert output == expected
+    end
+
+    assert [{:exit, {:status, 143}}] ==
+             Exile.stream(["sh", "-c", "exec 1>&- 2>&-; exec sleep 10"],
+               stderr: :consume,
+               exit_timeout: 200,
+               cancel_timeout: :infinity
+             )
+             |> Enum.to_list()
+  end
+
+  test "cancellation gives the command and input task separate timeouts" do
+    for {opts, timeout} <- [{[], 1000}, {[cancel_timeout: 300], 300}] do
+      opts =
+        Keyword.merge(
+          [input: stalled_input(self()), exit_timeout: :infinity, ignore_epipe: true],
+          opts
+        )
+
+      {elapsed, output} =
+        :timer.tc(fn ->
+          Exile.stream(
+            ["sh", "-c", "trap '' TERM; read ready; printf ready; exec sleep 10"],
+            opts
+          )
+          |> Enum.take(1)
+        end)
+
+      assert output == ["ready"]
+      # The writer gets a full timeout after waiting for the command to stop.
+      assert elapsed > (timeout + 50) * 1000
+      assert elapsed < (2 * timeout + 500) * 1000
+      assert_input_cleaned_up()
+    end
+  end
+
+  test "consumer exceptions and their stack traces survive cancellation" do
+    for stream_fun <- [&Exile.stream/2, &Exile.stream!/2] do
+      try do
+        stream_fun.(["sh", "-c", "read ready; printf ready; exec sleep 10"],
+          input: stalled_input(self()),
+          exit_timeout: :infinity,
+          cancel_timeout: 200
+        )
+        |> Stream.map(&fail_consumer/1)
+        |> Enum.to_list()
+
+        flunk("expected the consumer exception")
+      rescue
+        error in RuntimeError ->
+          assert error.message == "invalid output format"
+          assert [{__MODULE__, :fail_consumer, 1, _location} | _] = __STACKTRACE__
+      end
+
+      assert_input_cleaned_up()
+    end
+  end
+
+  test "suspended enumeration resumes through the final exit status" do
+    stream = Exile.stream(["sh", "-c", "printf ready; exit 7"])
+
+    assert {:suspended, ["ready"], continuation} =
+             Enumerable.reduce(stream, {:cont, []}, fn element, acc ->
+               {:suspend, [element | acc]}
+             end)
+
+    assert {:suspended, [{:exit, {:status, 7}}, "ready"] = output, continuation} =
+             continuation.({:cont, ["ready"]})
+
+    assert {:halted, ^output} = continuation.({:cont, output})
   end
 
   test "reduce_while can consume stream/2 and return exit payload" do
@@ -263,6 +359,29 @@ defmodule ExileTest do
 
     assert exit_status == 5
   end
+
+  defp stalled_input(parent) do
+    fn sink ->
+      process = sink.process
+      {:ok, os_pid} = Exile.Process.os_pid(process)
+      send(parent, {:input_resources, self(), process.pid, os_pid})
+      :ok = Enum.into(["ready\n"], sink)
+
+      receive do
+        :finish -> :ok
+      end
+    end
+  end
+
+  defp assert_input_cleaned_up do
+    assert_receive {:input_resources, writer_pid, process_pid, os_pid}
+    refute Process.alive?(writer_pid)
+    refute Nif.nif_is_os_pid_alive(os_pid)
+    monitor = Process.monitor(process_pid)
+    assert_receive {:DOWN, ^monitor, :process, ^process_pid, _reason}, 1000
+  end
+
+  defp fail_consumer(_chunk), do: raise("invalid output format")
 
   defp split_stream(stream) do
     {stdout, stderr} =

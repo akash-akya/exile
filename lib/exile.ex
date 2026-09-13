@@ -196,8 +196,13 @@ defmodule Exile do
 
         By defaults no input is sent to the command.
 
-    * `exit_timeout` - Duration to wait for external program to exit after completion
-  (when stream ends). Defaults to `:infinity`
+    * `exit_timeout` - Wait for program exit after output EOF. Positive milliseconds
+  or `:infinity`; defaults to `5000`.
+
+    * `cancel_timeout` - Timeout per cleanup step on early halt or failure: command
+  exit, then input-task completion. Positive milliseconds or `:infinity`; defaults
+  to `1000`, independently of `exit_timeout`. Total cleanup may take twice this timeout.
+  Unfinished input tasks are killed, which may skip their cleanup callbacks.
 
     * `max_chunk_size` - Maximum size of iodata chunk emitted by the stream.
   Chunk size can be less than the `max_chunk_size` depending on the amount of
@@ -223,6 +228,8 @@ defmodule Exile do
 
   If program exits with non-zero exit status or :epipe then `Exile.Stream.AbnormalExit`
   error will be raised with `exit_status` field set.
+
+  Consumer exceptions and stack traces are preserved; cleanup failures are logged.
 
   ### Examples
 
@@ -276,6 +283,7 @@ defmodule Exile do
   @spec stream!(nonempty_list(String.t()),
           input: Enum.t() | collectable_func(),
           exit_timeout: timeout(),
+          cancel_timeout: timeout(),
           stderr: :console | :redirect_to_stdout | :disable | :consume,
           ignore_epipe: boolean(),
           max_chunk_size: pos_integer()
@@ -291,12 +299,15 @@ defmodule Exile do
   The last element will be of the form `{:exit, term()}`. `term` will be a
   positive integer in case of normal exit and `:epipe` in case of epipe error
 
+  Early termination can still raise `Exile.Stream.AbnormalExit`; `ignore_epipe` applies.
+
   See `Exile.stream!/2` documentation for details about the options and
   examples.
   """
   @spec stream(nonempty_list(String.t()),
           input: Enum.t() | collectable_func(),
           exit_timeout: timeout(),
+          cancel_timeout: timeout(),
           stderr: :console | :redirect_to_stdout | :disable | :consume,
           ignore_epipe: boolean(),
           max_chunk_size: pos_integer()
