@@ -146,7 +146,7 @@ defmodule Exile.Stream do
         catch
           kind, reason ->
             stacktrace = __STACKTRACE__
-            cleanup_safely(fn -> await_exit(state, :halt) end)
+            cleanup_safely(fn -> await_exit(state, :cleanup) end)
             :erlang.raise(kind, reason, stacktrace)
         end
 
@@ -180,6 +180,9 @@ defmodule Exile.Stream do
         {:ok, {:stdout, data}} ->
           {:ok, IO.iodata_to_binary(data)}
 
+        {:error, {:input, {kind, reason, stacktrace}}} ->
+          :erlang.raise(kind, reason, stacktrace)
+
         {:error, errno} ->
           raise Error, "failed to read from the external process. errno: #{inspect(errno)}"
       end
@@ -209,28 +212,55 @@ defmodule Exile.Stream do
       {:ok, process} = Process.start_link(stream.cmd_with_args, process_opts)
       sink = %Sink{process: process, ignore_epipe: stream_opts[:ignore_epipe]}
 
-      writer_task = Task.async(fn -> stream_input(sink, stream_opts.input) end)
+      writer_task =
+        Task.async(fn -> stream_input(sink, stream_opts.input, stream_opts.cancel_timeout) end)
 
       %{process: process, stream_opts: stream_opts, writer_task: writer_task}
     end
 
-    defp stream_input(sink, input) do
+    defp stream_input(sink, input, cancel_timeout) do
       process = sink.process
 
-      case input do
-        :no_input ->
-          :ok
+      result =
+        case input do
+          :no_input ->
+            :ok
 
-        {:enumerable, enum} ->
-          Process.change_pipe_owner(process, :stdin, self())
-          Enum.into(enum, sink)
+          {:enumerable, enum} ->
+            Process.change_pipe_owner(process, :stdin, self())
+            Enum.into(enum, sink)
 
-        {:collectable, func} ->
-          Process.change_pipe_owner(process, :stdin, self())
-          func.(sink)
+          {:collectable, func} ->
+            Process.change_pipe_owner(process, :stdin, self())
+            func.(sink)
+        end
+
+      {:ok, result}
+    catch
+      :error, %Error{message: "epipe"} ->
+        {:error, :epipe}
+
+      kind, reason ->
+        stacktrace = __STACKTRACE__
+        Process.input_failed(sink.process, {kind, reason, stacktrace}, cancel_timeout)
+        {:input_error, kind, reason, stacktrace}
+    end
+
+    defp input_result(result, exit_state) do
+      case result do
+        {:ok, value} ->
+          value
+
+        {:input_error, _kind, _reason, _stacktrace} when exit_state == :cleanup ->
+          # Preserve the original failure during cleanup.
+          :cancelled
+
+        {:input_error, kind, reason, stacktrace} ->
+          :erlang.raise(kind, reason, stacktrace)
+
+        _ ->
+          result
       end
-    rescue
-      Error -> {:error, :epipe}
     end
 
     defp await_exit(state, exit_state) do
@@ -240,11 +270,12 @@ defmodule Exile.Stream do
         case exit_state do
           :eof ->
             {:ok, exit_status} = Process.await_exit(process, opts.exit_timeout)
-            Task.await(writer_task)
+            writer_result = Task.await(writer_task)
+            input_result(writer_result, :eof)
             {:exit, {:status, exit_status}}
 
-          :halt ->
-            cancel_stream(state)
+          exit_state when exit_state in [:halt, :cleanup] ->
+            cancel_stream(state, exit_state)
         end
       catch
         kind, reason ->
@@ -258,10 +289,11 @@ defmodule Exile.Stream do
       end
     end
 
-    defp cancel_stream(state) do
+    defp cancel_stream(state, exit_state) do
       %{process: process, stream_opts: opts, writer_task: writer_task} = state
       {:ok, exit_status} = Process.await_exit(process, opts.cancel_timeout)
-      writer_status = await_writer(writer_task, opts.cancel_timeout)
+      writer_result = await_writer(writer_task, opts.cancel_timeout)
+      writer_status = input_result(writer_result, exit_state)
 
       case {writer_status, opts.ignore_epipe} do
         {status, true} when status in [:ok, :cancelled, {:error, :epipe}] ->

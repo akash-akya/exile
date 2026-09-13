@@ -196,6 +196,9 @@ defmodule Exile do
 
         By defaults no input is sent to the command.
 
+      Input exceptions, throws, and explicit exits propagate to the enumerating caller
+      after cleanup. External exit signals are not intercepted.
+
     * `exit_timeout` - Wait for program exit after output EOF. Positive milliseconds
   or `:infinity`; defaults to `5000`.
 

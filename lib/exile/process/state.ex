@@ -32,7 +32,9 @@ defmodule Exile.Process.State do
           stderr: stderr_mode,
           operations: Operations.t(),
           exit_ref: reference(),
-          monitor_ref: reference()
+          monitor_ref: reference(),
+          input_error: {atom(), term(), list()} | nil,
+          exit_deadline: integer() | nil
         }
 
   defstruct [
@@ -44,7 +46,9 @@ defmodule Exile.Process.State do
     :stderr,
     :operations,
     :exit_ref,
-    :monitor_ref
+    :monitor_ref,
+    :input_error,
+    :exit_deadline
   ]
 
   alias __MODULE__

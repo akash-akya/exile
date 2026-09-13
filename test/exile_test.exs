@@ -292,6 +292,109 @@ defmodule ExileTest do
     end
   end
 
+  test "input callback exceptions interrupt a blocked reader and can be rescued" do
+    parent = self()
+
+    for stream_fun <- [&Exile.stream/2, &Exile.stream!/2] do
+      {elapsed, failure} =
+        :timer.tc(fn ->
+          try do
+            stream_fun.(["sleep", "10"],
+              input: fn sink ->
+                process = sink.process
+                {:ok, os_pid} = Exile.Process.os_pid(process)
+                send(parent, {:input_resources, self(), process.pid, os_pid})
+                Process.sleep(50)
+                fail_input()
+              end,
+              exit_timeout: :infinity,
+              cancel_timeout: 200,
+              ignore_epipe: true
+            )
+            |> Enum.to_list()
+          rescue
+            error in RuntimeError -> {error, __STACKTRACE__}
+          end
+        end)
+
+      assert {%RuntimeError{message: "input producer failed"},
+              [{__MODULE__, :fail_input, 0, _location} | _]} = failure
+
+      assert elapsed < 1_000_000
+      assert_input_cleaned_up()
+    end
+  end
+
+  test "input enumerable failure cancels the completion wait after EOF" do
+    parent = self()
+
+    input =
+      Stream.resource(
+        fn -> :ready end,
+        fn state ->
+          case state do
+            :ready ->
+              {["ready\n"], :fail}
+
+            :fail ->
+              Process.sleep(50)
+              fail_input()
+          end
+        end,
+        fn _state -> send(parent, {:input_closed, self()}) end
+      )
+
+    for exit_timeout <- [:infinity, 5000] do
+      {elapsed, _error} =
+        :timer.tc(fn ->
+          assert_raise RuntimeError, "input producer failed", fn ->
+            Exile.stream!(["sh", "-c", "read ready; exec 1>&- 2>&-; exec sleep 10"],
+              input: input,
+              stderr: :consume,
+              exit_timeout: exit_timeout,
+              cancel_timeout: 200
+            )
+            |> Enum.to_list()
+          end
+        end)
+
+      assert elapsed < 1_000_000
+      assert_receive {:input_closed, writer_pid}
+      refute Process.alive?(writer_pid)
+    end
+  end
+
+  test "successful command exit does not hide an input failure" do
+    assert_raise RuntimeError, "input producer failed", fn ->
+      Exile.stream(["sh", "-c", "read ready; exit 0"],
+        input: fn sink ->
+          :ok = Enum.into(["ready\n"], sink)
+          Process.sleep(50)
+          fail_input()
+        end,
+        ignore_epipe: true
+      )
+      |> Enum.to_list()
+    end
+  end
+
+  test "input throws and explicit exits propagate to the caller" do
+    for {kind, producer} <- [
+          {:throw, fn -> throw(:producer_failed) end},
+          {:exit, fn -> exit(:producer_failed) end}
+        ] do
+      result =
+        try do
+          Exile.stream(["cat"], input: fn _sink -> producer.() end, cancel_timeout: 200)
+          |> Enum.to_list()
+        catch
+          actual_kind, reason -> {actual_kind, reason}
+        end
+
+      assert result == {kind, :producer_failed}
+    end
+  end
+
   test "suspended enumeration resumes through the final exit status" do
     stream = Exile.stream(["sh", "-c", "printf ready; exit 7"])
 
@@ -382,6 +485,10 @@ defmodule ExileTest do
   end
 
   defp fail_consumer(_chunk), do: raise("invalid output format")
+
+  defp fail_input do
+    raise "input producer failed"
+  end
 
   defp split_stream(stream) do
     {stdout, stderr} =
