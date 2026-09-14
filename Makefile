@@ -18,6 +18,9 @@ else
 	TARGET_CFLAGS ?= -shared
 endif
 
+# Source timestamps cannot detect a host/container ABI change.
+.PHONY: priv/exile.so priv/spawner
+
 all: priv/exile.so priv/spawner
 	@echo > /dev/null
 
