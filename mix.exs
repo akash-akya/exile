@@ -8,7 +8,7 @@ defmodule Exile.MixProject do
     [
       app: :exile,
       version: @version,
-      elixir: "~> 1.7",
+      elixir: "~> 1.14",
       start_permanent: Mix.env() == :prod,
       compilers: [:elixir_make] ++ Mix.compilers(),
       make_targets: ["all"],
