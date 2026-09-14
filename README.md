@@ -25,6 +25,8 @@ def deps do
 end
 ```
 
+Build Exile in its target environment. For containers, keep `deps` and `_build`
+separate from the host to avoid reusing incompatible native binaries.
 
 ## Quick Start Examples
 
