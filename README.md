@@ -25,6 +25,15 @@ def deps do
 end
 ```
 
+Build Exile in its target environment. For containers, keep `deps` and `_build`
+separate from the host to avoid reusing incompatible native binaries.
+
+The native build always recompiles both binaries, but Mix may skip an already
+compiled dependency. To force a rebuild in the target environment:
+
+```sh
+mix deps.compile exile --force
+```
 
 ## Quick Start Examples
 

@@ -270,10 +270,18 @@ static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
 
   ERL_NIF_TERM term;
   io_resource_t *io;
-  int ret;
+  int ret, fd;
 
+  if (!enif_get_int(env, argv[0], &fd))
+    return ATOM_ERROR;
+
+  /* A valid descriptor is consumed even when resource creation fails. */
   io = enif_alloc_resource(FD_RT, sizeof(io_resource_t));
-  io->fd = FD_CLOSED;
+  if (io == NULL) {
+    close(fd);
+    return ATOM_ERROR;
+  }
+  io->fd = fd;
   io->lock = NULL;
 
   io->lock = enif_mutex_create("exile_fd_resource_lock");
@@ -281,9 +289,6 @@ static ERL_NIF_TERM nif_create_fd(ErlNifEnv *env, int argc,
     error("failed to create resource mutex");
     goto error_exit;
   }
-
-  if (!enif_get_int(env, argv[0], &io->fd))
-    goto error_exit;
 
   if (!enif_self(env, &io->controller_pid)) {
     error("failed get self pid");

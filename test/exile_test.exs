@@ -478,14 +478,12 @@ defmodule ExileTest do
     Path.join([__DIR__, "scripts", script])
   end
 
-  # runs the given code in a separate mix shell and captures all the
-  # output written to the shell during the execution the output can be
-  # from the elixir or from the spawned command
+  # The suite already compiled Exile; capture only runtime output from the child.
   defp run_in_shell(args, opts) do
     expr = ~s{Exile.stream!(#{inspect(args)}, #{inspect(opts)}) |> Enum.to_list()}
 
     {_output, _exit_status} =
-      System.cmd("sh", ["-c", "mix run -e '#{expr}'"],
+      System.cmd("sh", ["-c", "mix run --no-compile -e '#{expr}'"],
         stderr_to_stdout: true,
         env: [{"MIX_ENV", "test"}]
       )

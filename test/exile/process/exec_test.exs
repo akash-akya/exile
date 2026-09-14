@@ -4,31 +4,62 @@ defmodule Exile.Process.ExecTest do
   alias Exile.Process.Exec
   alias Exile.Process.Nif
 
-  test "start/2 returns process handles for a fast-exiting command" do
-    {:ok, args} = Exec.normalize_exec_args(["sh", "-c", "exit 0"], stderr: :consume)
+  setup_all do
+    directory = Path.join(System.tmp_dir!(), "exile-exec-#{System.pid()}")
+    File.mkdir!(directory)
+    on_exit(fn -> File.rm_rf!(directory) end)
 
-    %{port: port, stdin: stdin, stdout: stdout, stderr: stderr} = Exec.start(args, args.stderr)
-
-    assert is_port(port)
-    assert not is_nil(stdin)
-    assert not is_nil(stdout)
-    assert not is_nil(stderr)
-
-    assert :ok = Nif.nif_close(stdin)
-    assert :ok = Nif.nif_close(stdout)
-    assert :ok = Nif.nif_close(stderr)
+    helper = Path.join(directory, "spawner")
+    source = Path.expand("../../scripts/startup_helper.c", __DIR__)
+    {output, status} = System.cmd("cc", ["-std=c99", "-Wall", "-Werror", source, "-o", helper])
+    assert status == 0, output
+    {:ok, helper: helper}
   end
 
-  test "os_pid/1 can be unavailable shortly after start when command exits quickly" do
-    {:ok, args} = Exec.normalize_exec_args(["sh", "-c", "exit 0"], stderr: :consume)
+  test "reports a helper exit instead of a socket timeout", %{helper: helper} do
+    error = assert_raise Exile.Process.Error, fn -> start_helper(helper, "exit") end
+    assert error.reason == :spawner_exit
+    assert error.exit_status == 23
+    refute error.message =~ "timeout"
+  end
 
-    %{port: port, stdin: stdin, stdout: stdout, stderr: stderr} = Exec.start(args, args.stderr)
+  test "times out and closes the port if the helper never connects", %{helper: helper} do
+    error = assert_raise Exile.Process.Error, fn -> start_helper(helper, "no_connect") end
+    assert error.operation == :accept
+    assert error.reason == :timeout
 
-    assert :ok = Nif.nif_close(stdin)
-    assert :ok = Nif.nif_close(stdout)
-    assert :ok = Nif.nif_close(stderr)
+    {:links, links} = Process.info(self(), :links)
+    refute Enum.any?(links, &is_port/1)
+  end
 
-    Process.sleep(5)
-    assert :undefined == Exec.os_pid(port)
+  test "times out if the helper connects but sends nothing", %{helper: helper} do
+    error = assert_raise Exile.Process.Error, fn -> start_helper(helper, "no_message") end
+    assert error.operation == :recvmsg
+    assert error.reason == :timeout
+  end
+
+  test "rejects a handshake without file descriptors", %{helper: helper} do
+    error = assert_raise Exile.Process.Error, fn -> start_helper(helper, "no_fds") end
+    assert error.reason == :invalid_fd_message
+  end
+
+  test "fast commands preserve their handles and exit status" do
+    for status <- [0, 7] do
+      {:ok, args} = Exec.normalize_exec_args(["sh", "-c", "exit #{status}"], stderr: :consume)
+      %{port: port, stdin: stdin, stdout: stdout, stderr: stderr} = Exec.start(args, args.stderr)
+      monitor = Port.monitor(port)
+
+      assert_receive {^port, {:exit_status, ^status}}, 1000
+      assert_receive {:DOWN, ^monitor, :port, ^port, _reason}
+      assert Exec.os_pid(port) == :undefined
+      assert :ok = Nif.nif_close(stdin)
+      assert :ok = Nif.nif_close(stdout)
+      assert :ok = Nif.nif_close(stderr)
+    end
+  end
+
+  defp start_helper(helper, mode) do
+    {:ok, args} = Exec.normalize_exec_args(["true", mode], stderr: :consume)
+    Exec.start(args, :consume, helper)
   end
 end

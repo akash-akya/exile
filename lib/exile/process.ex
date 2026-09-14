@@ -324,7 +324,7 @@ defmodule Exile.Process do
   require Logger
 
   defmodule Error do
-    defexception [:message]
+    defexception [:message, :operation, :reason, :helper_path, :exit_status]
   end
 
   @type pipe_name :: :stdin | :stdout | :stderr
@@ -347,33 +347,21 @@ defmodule Exile.Process do
   @os_signal_timeout 1000
 
   @doc """
-  Starts `Exile.Process` server.
+  Starts a linked server to run `cmd_with_args`, e.g. `["cat", "file.txt"]`.
 
-  Starts external program using `cmd_with_args` with options `opts`
-
-  `cmd_with_args` must be a list containing command with arguments.
-  example: `["cat", "file.txt"]`.
+  Startup is asynchronous. If it fails, the server exits with `Exile.Process.Error`.
+  Connecting to the helper and receiving its pipes each have a two-second timeout.
+  These timeouts do not limit the command's runtime.
 
   ### Options
 
-    * `cd`   -  the directory to run the command in
+    * `:cd` - Working directory.
+    * `:env` - A map or list of `{name, value}` environment variables.
+    * `:stderr` - `:console` (default), `:redirect_to_stdout`, `:disable`, or
+      `:consume`. With `:consume`, read stderr to avoid blocking the command.
+      See [stderr handling](#module-stderr) for details.
 
-    * `env`  -  a list of tuples containing environment key-value.
-  These can be accessed in the external program
-
-    * `stderr`  -  different ways to handle stderr stream.
-        1. `:console`  -  stderr output is redirected to console (Default)
-        2. `:redirect_to_stdout`  -  stderr output is redirected to stdout
-        3. `:disable`  -  stderr output is redirected `/dev/null` suppressing all output
-        4. `:consume`  -  connects stderr for the consumption. When set, the stderr output must be consumed to
-  avoid external program from blocking.
-
-      See [`:stderr`](#module-stderr) for more details and issues associated with them
-
-  Caller of the process will be the owner owner of the Exile Process.
-  And default owner of all opened pipes.
-
-  Please check module documentation for more details
+  The caller owns the process and its pipes.
   """
   @spec start_link(nonempty_list(String.t()),
           cd: String.t(),
